@@ -3,14 +3,16 @@ Gumroad Discover Page Scraper
 Extracts product data from Gumroad's discover page using Playwright.
 """
 
+import argparse
 import asyncio
 import csv
 import re
 import json
+import random
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Optional
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import async_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
 
 
 @dataclass
@@ -146,10 +148,11 @@ def parse_sales(sales_str: str) -> Optional[int]:
     return None
 
 
-async def get_product_details(page: Page, product_url: str) -> dict:
+async def get_product_details(page: Page, product_url: str, max_retries: int = 3) -> dict:
     """
     Visit individual product page to get detailed rating breakdown and sales.
     Returns dict with rating breakdown and sales info.
+    Includes retry logic for resilience.
     """
     details = {
         'rating_1_star': 0,
@@ -160,46 +163,61 @@ async def get_product_details(page: Page, product_url: str) -> dict:
         'sales_count': None,
     }
 
-    try:
-        await page.goto(product_url, wait_until='domcontentloaded', timeout=15000)
-        await page.wait_for_timeout(2000)  # Wait for dynamic content
+    for attempt in range(max_retries):
+        try:
+            await page.goto(product_url, wait_until='domcontentloaded', timeout=20000)
+            await page.wait_for_timeout(2000)  # Wait for dynamic content
 
-        # Get all visible text on the page
-        body_text = await page.inner_text('body')
+            # Get all visible text on the page
+            body_text = await page.inner_text('body')
 
-        # Find sales count - look for pattern like "28,133 sales" or "1.2K sales"
-        sales_match = re.search(r'([\d,]+)\s*sales', body_text, re.IGNORECASE)
-        if sales_match:
-            sales_str = sales_match.group(1).replace(',', '')
-            details['sales_count'] = int(sales_str)
-        else:
-            # Try K/M suffix patterns
-            sales_match = re.search(r'([\d.]+)\s*([KkMm])\s*sales', body_text, re.IGNORECASE)
+            # Find sales count - look for pattern like "28,133 sales" or "1.2K sales"
+            sales_match = re.search(r'([\d,]+)\s*sales', body_text, re.IGNORECASE)
             if sales_match:
-                value = float(sales_match.group(1))
-                multiplier = sales_match.group(2).upper()
-                if multiplier == 'K':
-                    value *= 1000
-                elif multiplier == 'M':
-                    value *= 1000000
-                details['sales_count'] = int(value)
+                sales_str = sales_match.group(1).replace(',', '')
+                details['sales_count'] = int(sales_str)
+            else:
+                # Try K/M suffix patterns
+                sales_match = re.search(r'([\d.]+)\s*([KkMm])\s*sales', body_text, re.IGNORECASE)
+                if sales_match:
+                    value = float(sales_match.group(1))
+                    multiplier = sales_match.group(2).upper()
+                    if multiplier == 'K':
+                        value *= 1000
+                    elif multiplier == 'M':
+                        value *= 1000000
+                    details['sales_count'] = int(value)
 
-        # Try to find rating breakdown from the page
-        # Look for star distribution sections
-        for star in range(1, 6):
-            # Pattern: "5 stars (123)" or "5-star: 123" or similar
-            patterns = [
-                rf'{star}\s*stars?\s*\(?(\d+)\)?',
-                rf'{star}\s*[-★]\s*(\d+)',
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, body_text, re.IGNORECASE)
-                if match:
-                    details[f'rating_{star}_star'] = int(match.group(1))
-                    break
+            # Try to find rating breakdown - look for percentage patterns
+            # Gumroad shows ratings as percentages like "5 stars 80%"
+            for star in range(1, 6):
+                patterns = [
+                    rf'{star}\s*stars?\s*(\d+)%',  # "5 stars 80%"
+                    rf'{star}\s*stars?\s*\((\d+)%\)',  # "5 stars (80%)"
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, body_text, re.IGNORECASE)
+                    if match:
+                        details[f'rating_{star}_star'] = int(match.group(1))
+                        break
 
-    except Exception as e:
-        print(f"  Warning: Could not get details for {product_url[:50]}... ({e})")
+            # Success - break out of retry loop
+            break
+
+        except PlaywrightTimeout:
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2
+                print(f"  Timeout, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"  Warning: Timeout after {max_retries} attempts for {product_url[:50]}...")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2
+                print(f"  Error: {e}, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(wait_time)
+            else:
+                print(f"  Warning: Could not get details for {product_url[:50]}... ({e})")
 
     return details
 
@@ -207,7 +225,8 @@ async def get_product_details(page: Page, product_url: str) -> dict:
 async def scrape_discover_page(
     category_url: str,
     max_products: int = 100,
-    get_detailed_ratings: bool = True
+    get_detailed_ratings: bool = True,
+    rate_limit_ms: int = 500
 ) -> list[Product]:
     """
     Scrape products from a Gumroad discover/category page.
@@ -216,6 +235,7 @@ async def scrape_discover_page(
         category_url: URL of the category page to scrape
         max_products: Maximum number of products to scrape
         get_detailed_ratings: Whether to visit each product page for rating breakdown
+        rate_limit_ms: Delay between product page requests in milliseconds
 
     Returns:
         List of Product objects
@@ -233,7 +253,7 @@ async def scrape_discover_page(
 
         print(f"Navigating to {category_url}...")
         await page.goto(category_url, wait_until='networkidle', timeout=30000)
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
 
         # Extract category from URL
         category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
@@ -244,9 +264,10 @@ async def scrape_discover_page(
             if query_match:
                 main_category = query_match.group(1)
 
-        # Scroll to load more products
+        # Scroll to load more products - increased attempts for better coverage
         scroll_attempts = 0
-        max_scroll_attempts = 50
+        max_scroll_attempts = 100
+        no_new_products_count = 0
 
         while len(products) < max_products and scroll_attempts < max_scroll_attempts:
             # Find all product cards using article elements
@@ -281,15 +302,37 @@ async def scrape_discover_page(
                         continue
                     seen_urls.add(product_url)
 
-                    # Extract product name from h2 or h4 with itemprop="name"
-                    # Discover results use h2, search results use h4
-                    name_elem = await card.query_selector('[itemprop="name"], h2, h4')
+                    # Extract product name - try multiple selectors in order of reliability
                     product_name = "Unknown"
-                    if name_elem:
-                        product_name = await name_elem.inner_text()
-                        product_name = product_name.strip()
-                        # Decode HTML entities
-                        product_name = product_name.replace('&amp;', '&').replace('&#39;', "'")
+                    name_selectors = [
+                        '[itemprop="name"]',  # Schema.org markup (most reliable)
+                        'h2[class*="title"]',  # Title class
+                        'h4[class*="title"]',
+                        'h2',  # Discover results
+                        'h4',  # Search results
+                        '.product-name',
+                        'a.stretched-link',  # Fallback to link text
+                    ]
+                    for selector in name_selectors:
+                        name_elem = await card.query_selector(selector)
+                        if name_elem:
+                            text = await name_elem.inner_text()
+                            text = text.strip()
+                            if text and text != "Unknown" and len(text) > 1:
+                                product_name = text
+                                break
+
+                    # Clean up product name
+                    product_name = product_name.replace('&amp;', '&').replace('&#39;', "'").replace('\n', ' ')
+                    product_name = ' '.join(product_name.split())  # Normalize whitespace
+
+                    # If still unknown, try to get from the link aria-label or title
+                    if product_name == "Unknown":
+                        link = await card.query_selector('a.stretched-link, a[href*="/l/"]')
+                        if link:
+                            aria_label = await link.get_attribute('aria-label')
+                            title = await link.get_attribute('title')
+                            product_name = aria_label or title or "Unknown"
 
                     # Extract creator name - look for the link with user-avatar img
                     # Structure: <a href="...?recommended_by=..."><img class="user-avatar">CreatorName</a>
@@ -384,17 +427,21 @@ async def scrape_discover_page(
 
                     # Get detailed info if requested
                     if get_detailed_ratings and product_url:
+                        # Rate limiting - add random jitter to avoid detection
+                        jitter = random.randint(0, rate_limit_ms // 2)
+                        await asyncio.sleep((rate_limit_ms + jitter) / 1000)
+
                         detail_page = await context.new_page()
                         rating_breakdown = await get_product_details(detail_page, product_url)
                         await detail_page.close()
 
-                    # Calculate mixed review percentage (2-4 stars / total)
-                    mixed_reviews = (
+                    # Calculate mixed review percentage (2-4 stars)
+                    # Note: rating_breakdown values are already percentages from the page
+                    mixed_percent = (
                         rating_breakdown['rating_2_star'] +
                         rating_breakdown['rating_3_star'] +
                         rating_breakdown['rating_4_star']
                     )
-                    mixed_percent = (mixed_reviews / total_reviews * 100) if total_reviews > 0 else 0.0
 
                     # Estimate revenue
                     sales = rating_breakdown['sales_count']
@@ -431,24 +478,40 @@ async def scrape_discover_page(
             if len(products) >= max_products:
                 break
 
-            # Scroll to load more
+            # Scroll to load more - use multiple scroll strategies
             prev_count = len(products)
-            await page.evaluate('window.scrollBy(0, window.innerHeight)')
+            prev_cards = len(product_cards)
+
+            # Strategy 1: Scroll by viewport height
+            await page.evaluate('window.scrollBy(0, window.innerHeight * 2)')
+            await page.wait_for_timeout(1000)
+
+            # Strategy 2: Scroll to bottom of page
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
             await page.wait_for_timeout(1500)
 
-            # Try clicking "Load More" button if present
+            # Strategy 3: Try clicking "Load More" button if present
             try:
-                load_more = await page.query_selector('button:has-text("Load more"), button:has-text("Show more")')
-                if load_more:
+                load_more = await page.query_selector('button:has-text("Load more"), button:has-text("Show more"), [class*="load-more"]')
+                if load_more and await load_more.is_visible():
                     await load_more.click()
                     await page.wait_for_timeout(2000)
             except:
                 pass
 
-            # Check if we're making progress
-            if len(products) == prev_count:
+            # Check current card count after scroll
+            new_cards = await page.query_selector_all('article')
+
+            # Check if we're making progress (either new products scraped or new cards loaded)
+            if len(products) == prev_count and len(new_cards) <= prev_cards:
+                no_new_products_count += 1
                 scroll_attempts += 1
+                # If stuck for 10 consecutive attempts, give up
+                if no_new_products_count >= 10:
+                    print(f"No new products found after {no_new_products_count} scroll attempts. Stopping.")
+                    break
             else:
+                no_new_products_count = 0
                 scroll_attempts = 0
 
         await browser.close()
@@ -473,70 +536,161 @@ def save_to_csv(products: list[Product], filename: str):
     print(f"\nSaved {len(products)} products to {filename}")
 
 
-async def main():
-    """Main entry point."""
-    # Gumroad category URLs - using direct category pages
-    CATEGORY_URLS = {
-        'design': 'https://gumroad.com/design',
-        '3d': 'https://gumroad.com/3d',
-        'drawing': 'https://gumroad.com/drawing-and-painting',
-        'software': 'https://gumroad.com/software',
-        'music': 'https://gumroad.com/music-and-sound-design',
-        'writing': 'https://gumroad.com/writing-and-publishing',
-        'education': 'https://gumroad.com/education',
-        'photography': 'https://gumroad.com/photography',
-        'comics': 'https://gumroad.com/comics-and-graphic-novels',
-        'fitness': 'https://gumroad.com/fitness-and-health',
-        'films': 'https://gumroad.com/films',
-        'audio': 'https://gumroad.com/audio',
-        'games': 'https://gumroad.com/gaming',
-        'discover': 'https://gumroad.com/discover',
-    }
+# Gumroad category URLs - using direct category pages
+CATEGORY_URLS = {
+    'design': 'https://gumroad.com/design',
+    '3d': 'https://gumroad.com/3d',
+    'drawing': 'https://gumroad.com/drawing-and-painting',
+    'software': 'https://gumroad.com/software-development',
+    'music': 'https://gumroad.com/music-and-sound-design',
+    'writing': 'https://gumroad.com/writing-and-publishing',
+    'education': 'https://gumroad.com/education',
+    'photography': 'https://gumroad.com/photography',
+    'comics': 'https://gumroad.com/comics-and-graphic-novels',
+    'fitness': 'https://gumroad.com/fitness-and-health',
+    'films': 'https://gumroad.com/films',
+    'audio': 'https://gumroad.com/audio',
+    'games': 'https://gumroad.com/gaming',
+    'fiction': 'https://gumroad.com/fiction-books',
+    'self-improvement': 'https://gumroad.com/self-improvement',
+    'business': 'https://gumroad.com/business-and-money',
+    'other': 'https://gumroad.com/other',
+    'discover': 'https://gumroad.com/discover',
+}
 
-    # Choose category to scrape
-    category = 'design'  # Change this to scrape different categories
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Scrape product data from Gumroad discover pages.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python gumroad_scraper.py                     # Scrape 'design' category (default)
+  python gumroad_scraper.py -c software         # Scrape 'software' category
+  python gumroad_scraper.py -c 3d -n 50         # Scrape 50 products from '3d' category
+  python gumroad_scraper.py --all -n 25         # Scrape 25 products from ALL categories
+  python gumroad_scraper.py -c design --fast    # Fast mode (no detailed product pages)
+
+Available categories:
+  design, 3d, drawing, software, music, writing, education, photography,
+  comics, fitness, films, audio, games, fiction, self-improvement, business,
+  other, discover
+        """
+    )
+    parser.add_argument(
+        '-c', '--category',
+        type=str,
+        default='design',
+        choices=list(CATEGORY_URLS.keys()),
+        help='Category to scrape (default: design)'
+    )
+    parser.add_argument(
+        '-n', '--max-products',
+        type=int,
+        default=100,
+        help='Maximum number of products to scrape per category (default: 100)'
+    )
+    parser.add_argument(
+        '--all',
+        action='store_true',
+        help='Scrape all categories'
+    )
+    parser.add_argument(
+        '--fast',
+        action='store_true',
+        help='Fast mode: skip detailed product page scraping (no sales data)'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        type=str,
+        help='Output CSV filename (default: auto-generated with timestamp)'
+    )
+    parser.add_argument(
+        '--rate-limit',
+        type=int,
+        default=500,
+        help='Rate limit in milliseconds between requests (default: 500)'
+    )
+    return parser.parse_args()
+
+
+async def scrape_category(category: str, args) -> list[Product]:
+    """Scrape a single category and return products."""
     url = CATEGORY_URLS.get(category, 'https://gumroad.com/discover')
 
     print("=" * 60)
-    print("GUMROAD DISCOVER PAGE SCRAPER")
+    print(f"SCRAPING: {category.upper()}")
     print("=" * 60)
-    print(f"Category: {category}")
     print(f"URL: {url}")
-    print(f"Target: 100 products")
+    print(f"Target: {args.max_products} products")
+    print(f"Detailed scraping: {'No (fast mode)' if args.fast else 'Yes'}")
     print("=" * 60 + "\n")
 
-    # Scrape products
     products = await scrape_discover_page(
         category_url=url,
-        max_products=100,
-        get_detailed_ratings=True  # Get sales count from product pages
+        max_products=args.max_products,
+        get_detailed_ratings=not args.fast,
+        rate_limit_ms=args.rate_limit
     )
 
+    return products
+
+
+async def main():
+    """Main entry point."""
+    args = parse_args()
+
+    all_products = []
+
+    if args.all:
+        # Scrape all categories
+        categories = [c for c in CATEGORY_URLS.keys() if c != 'discover']
+        print(f"Scraping {len(categories)} categories...\n")
+
+        for category in categories:
+            products = await scrape_category(category, args)
+            all_products.extend(products)
+            print(f"\nCompleted {category}: {len(products)} products\n")
+
+    else:
+        # Scrape single category
+        products = await scrape_category(args.category, args)
+        all_products.extend(products)
+
     # Save to CSV
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'gumroad_{category}_{timestamp}.csv'
-    save_to_csv(products, filename)
+    if args.output:
+        filename = args.output
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        if args.all:
+            filename = f'gumroad_all_{timestamp}.csv'
+        else:
+            filename = f'gumroad_{args.category}_{timestamp}.csv'
+
+    save_to_csv(all_products, filename)
 
     # Print summary
     print("\n" + "=" * 60)
     print("SCRAPE COMPLETE")
     print("=" * 60)
-    print(f"Total products scraped: {len(products)}")
+    print(f"Total products scraped: {len(all_products)}")
 
-    if products:
-        avg_price = sum(p.price_usd for p in products) / len(products)
-        rated_products = [p for p in products if p.average_rating]
+    if all_products:
+        avg_price = sum(p.price_usd for p in all_products) / len(all_products)
+        rated_products = [p for p in all_products if p.average_rating]
         avg_rating = sum(p.average_rating for p in rated_products) / len(rated_products) if rated_products else 0
 
-        products_with_sales = [p for p in products if p.sales_count]
+        products_with_sales = [p for p in all_products if p.sales_count]
         total_sales = sum(p.sales_count for p in products_with_sales)
-        total_revenue = sum(p.estimated_revenue for p in products if p.estimated_revenue)
+        total_revenue = sum(p.estimated_revenue for p in all_products if p.estimated_revenue)
 
         print(f"Average price: ${avg_price:.2f}")
         print(f"Average rating: {avg_rating:.2f} ({len(rated_products)} rated products)")
         print(f"Products with sales data: {len(products_with_sales)}")
         print(f"Total sales (visible): {total_sales:,}")
         print(f"Total estimated revenue: ${total_revenue:,.2f}")
+        print(f"Output file: {filename}")
 
     print("=" * 60)
 
