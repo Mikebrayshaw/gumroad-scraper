@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.csv
+*.html
+*.png
+.git/
+.gitignore
+*.md
+.env
+.venv/
+venv/
