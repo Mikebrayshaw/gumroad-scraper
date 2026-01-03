@@ -304,16 +304,20 @@ async def scrape_discover_page(
                         continue
                     seen_urls.add(product_url)
 
-                    # Extract product name - try multiple selectors in order of reliability
+                    # Extract product name - handle both discover grid cards (h2 titles)
+                    # and search result cards (h4 titles inside the stretched link).
                     product_name = "Unknown"
                     name_selectors = [
-                        '[itemprop="name"]',  # Schema.org markup (most reliable)
-                        'h2[class*="title"]',  # Title class
-                        'h4[class*="title"]',
-                        'h2',  # Discover results
-                        'h4',  # Search results
+                        'header h2[itemprop="name"]:not([hidden])',
+                        'header h3[itemprop="name"]:not([hidden])',
+                        'header h4[itemprop="name"]:not([hidden])',
+                        '[itemprop="name"]:not([hidden])',  # Schema.org markup (skip hidden seller names)
+                        'header h2',
+                        'header h3',
+                        'header h4',
+                        '.line-clamp-3',  # Discover grid
+                        '.line-clamp-4',  # Search results
                         '.product-name',
-                        'a.stretched-link',  # Fallback to link text
                     ]
                     for selector in name_selectors:
                         name_elem = await card.query_selector(selector)
@@ -323,6 +327,18 @@ async def scrape_discover_page(
                             if text and text != "Unknown" and len(text) > 1:
                                 product_name = text
                                 break
+
+                    # If still unknown, try to derive the name from the product link
+                    if product_name == "Unknown" and link:
+                        link_text = (await link.inner_text() or '').strip()
+                        if link_text:
+                            product_name = link_text
+                        else:
+                            heading_in_link = await link.query_selector('h1, h2, h3, h4, h5, h6')
+                            if heading_in_link:
+                                heading_text = (await heading_in_link.inner_text() or '').strip()
+                                if heading_text:
+                                    product_name = heading_text
 
                     # Clean up product name
                     product_name = product_name.replace('&amp;', '&').replace('&#39;', "'").replace('\n', ' ')
