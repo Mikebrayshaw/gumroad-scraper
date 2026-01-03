@@ -148,7 +148,12 @@ def parse_sales(sales_str: str) -> Optional[int]:
     return None
 
 
-async def get_product_details(page: Page, product_url: str, max_retries: int = 3) -> dict:
+async def get_product_details(
+    page: Page,
+    product_url: str,
+    max_retries: int = 3,
+    total_reviews_hint: Optional[int] = None,
+) -> dict:
     """
     Visit individual product page to get detailed rating breakdown and sales.
     Returns dict with rating breakdown and sales info.
@@ -188,18 +193,74 @@ async def get_product_details(page: Page, product_url: str, max_retries: int = 3
                         value *= 1000000
                     details['sales_count'] = int(value)
 
-            # Try to find rating breakdown - look for percentage patterns
-            # Gumroad shows ratings as percentages like "5 stars 80%"
-            for star in range(1, 6):
-                patterns = [
-                    rf'{star}\s*stars?\s*(\d+)%',  # "5 stars 80%"
-                    rf'{star}\s*stars?\s*\((\d+)%\)',  # "5 stars (80%)"
-                ]
-                for pattern in patterns:
-                    match = re.search(pattern, body_text, re.IGNORECASE)
-                    if match:
-                        details[f'rating_{star}_star'] = int(match.group(1))
-                        break
+            # Try to find a reliable total reviews count on the detail page
+            total_reviews_match = re.search(r'(\d+[\d,]*)\s*(?:reviews|ratings)', body_text, re.IGNORECASE)
+            total_reviews_detail = int(total_reviews_match.group(1).replace(',', '')) if total_reviews_match else None
+            total_reviews_for_calc = total_reviews_detail or total_reviews_hint
+
+            # Collect candidate texts for rating breakdown
+            star_text_sources = []
+
+            # aria-label/title attributes often include the percentages even when not visible
+            aria_texts = await page.eval_on_selector_all(
+                '[aria-label*="star" i], [title*="star" i]',
+                'els => els.map(el => (el.getAttribute("aria-label") || el.getAttribute("title") || ""))'
+            )
+            star_text_sources.extend([t for t in aria_texts if t])
+
+            # Visible text nodes that mention stars
+            try:
+                inner_texts = await page.locator('text=/[1-5]\s*star/i').all_inner_texts()
+                star_text_sources.extend([' '.join(t.split()) for t in inner_texts if t.strip()])
+            except Exception:
+                # Locator can fail on some pages; fall back to body text
+                pass
+
+            # Fallback to scanning the whole body text
+            star_text_sources.append(body_text)
+
+            # Parse each candidate text for star percentages/counts
+            counts_found: dict[int, float] = {}
+
+            for text in star_text_sources:
+                normalized = ' '.join(text.split())
+                for star in range(1, 6):
+                    if details[f'rating_{star}_star']:
+                        continue  # Already found for this star
+
+                    if not re.search(rf'{star}\s*stars?', normalized, re.IGNORECASE):
+                        continue
+
+                    percent_match = re.search(r'(\d+(?:\.\d+)?)\s*%', normalized)
+                    if percent_match:
+                        details[f'rating_{star}_star'] = int(round(float(percent_match.group(1))))
+                        continue
+
+                    # Look for counts (e.g., "120 reviews")
+                    count_match = re.search(r'(\d+[\d,]*)\s*(?:reviews?|ratings?)', normalized, re.IGNORECASE)
+                    if count_match:
+                        value = float(count_match.group(1).replace(',', ''))
+                        counts_found[star] = value
+                        continue
+
+                    # As a last resort, use the last numeric value after the star text
+                    cleaned = re.sub(rf'^[^0-9]*{star}\s*stars?\s*', '', normalized, flags=re.IGNORECASE)
+                    number_candidates = [n for n in re.findall(r'\d+(?:\.\d+)?', cleaned) if int(float(n)) != star]
+                    if number_candidates:
+                        value = float(number_candidates[-1])
+                        counts_found[star] = value
+
+            # If we collected counts but not percentages, convert when we know total reviews
+            if counts_found:
+                for star, count_value in counts_found.items():
+                    if details[f'rating_{star}_star']:
+                        continue
+                    if total_reviews_for_calc and total_reviews_for_calc > 0:
+                        percent = int(round((count_value / total_reviews_for_calc) * 100))
+                        details[f'rating_{star}_star'] = percent
+                    else:
+                        # Store the raw count as a best-effort fallback
+                        details[f'rating_{star}_star'] = int(round(count_value))
 
             # Success - break out of retry loop
             break
@@ -450,7 +511,11 @@ async def scrape_discover_page(
                         await asyncio.sleep((rate_limit_ms + jitter) / 1000)
 
                         detail_page = await context.new_page()
-                        rating_breakdown = await get_product_details(detail_page, product_url)
+                        rating_breakdown = await get_product_details(
+                            detail_page,
+                            product_url,
+                            total_reviews_hint=total_reviews,
+                        )
                         await detail_page.close()
 
                     # Calculate mixed review percentage (2-4 stars)
