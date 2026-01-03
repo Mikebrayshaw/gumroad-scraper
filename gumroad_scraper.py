@@ -264,10 +264,11 @@ async def scrape_discover_page(
             if query_match:
                 main_category = query_match.group(1)
 
-        # Scroll to load more products - increased attempts for better coverage
+        # Scroll to load more products - aggressive scrolling for better coverage
         scroll_attempts = 0
-        max_scroll_attempts = 100
-        no_new_products_count = 0
+        max_scroll_attempts = 200  # Increased for large scrapes
+        no_new_cards_count = 0
+        last_card_count = 0
 
         while len(products) < max_products and scroll_attempts < max_scroll_attempts:
             # Find all product cards using article elements
@@ -277,7 +278,8 @@ async def scrape_discover_page(
                 print("No product cards found, trying alternative selectors...")
                 product_cards = await page.query_selector_all('[class*="product-card"], a[href*="/l/"]')
 
-            print(f"Found {len(product_cards)} product cards on page...")
+            current_card_count = len(product_cards)
+            print(f"Found {current_card_count} product cards on page (scraped: {len(products)}/{max_products})...")
 
             for card in product_cards:
                 if len(products) >= max_products:
@@ -479,40 +481,56 @@ async def scrape_discover_page(
                 break
 
             # Scroll to load more - use multiple scroll strategies
-            prev_count = len(products)
-            prev_cards = len(product_cards)
+            scroll_attempts += 1
 
-            # Strategy 1: Scroll by viewport height
-            await page.evaluate('window.scrollBy(0, window.innerHeight * 2)')
-            await page.wait_for_timeout(1000)
+            # Strategy 1: Scroll by viewport height (multiple times)
+            for _ in range(3):
+                await page.evaluate('window.scrollBy(0, window.innerHeight)')
+                await page.wait_for_timeout(500)
 
             # Strategy 2: Scroll to bottom of page
             await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(2000)
 
             # Strategy 3: Try clicking "Load More" button if present
             try:
                 load_more = await page.query_selector('button:has-text("Load more"), button:has-text("Show more"), [class*="load-more"]')
                 if load_more and await load_more.is_visible():
                     await load_more.click()
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(2500)
             except:
                 pass
 
+            # Wait for any network requests to complete
+            try:
+                await page.wait_for_load_state('networkidle', timeout=5000)
+            except:
+                pass  # Continue even if timeout
+
             # Check current card count after scroll
             new_cards = await page.query_selector_all('article')
+            new_card_count = len(new_cards)
 
-            # Check if we're making progress (either new products scraped or new cards loaded)
-            if len(products) == prev_count and len(new_cards) <= prev_cards:
-                no_new_products_count += 1
-                scroll_attempts += 1
-                # If stuck for 10 consecutive attempts, give up
-                if no_new_products_count >= 10:
-                    print(f"No new products found after {no_new_products_count} scroll attempts. Stopping.")
-                    break
+            # Check if we're making progress (new cards loaded)
+            if new_card_count > last_card_count:
+                # New cards loaded - reset counter
+                no_new_cards_count = 0
+                last_card_count = new_card_count
+                print(f"  Loaded {new_card_count - current_card_count} new cards (total: {new_card_count})")
             else:
-                no_new_products_count = 0
-                scroll_attempts = 0
+                no_new_cards_count += 1
+                # Try more aggressive scrolling when stuck
+                if no_new_cards_count >= 3:
+                    # Scroll up slightly then back down to trigger lazy loading
+                    await page.evaluate('window.scrollBy(0, -500)')
+                    await page.wait_for_timeout(500)
+                    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await page.wait_for_timeout(2000)
+
+                # If stuck for 15 consecutive attempts, give up
+                if no_new_cards_count >= 15:
+                    print(f"No new cards loaded after {no_new_cards_count} scroll attempts. Reached end of results.")
+                    break
 
         await browser.close()
 
