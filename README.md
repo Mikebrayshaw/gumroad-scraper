@@ -42,3 +42,17 @@ python gumroad_scraper.py --output gumroad_design.csv
 ```
 
 The scraper saves a CSV with all collected fields and prints a run summary that includes averages, sales totals, and the output path.
+
+## Supabase persistence & Railway deployment
+1. Create a Supabase project and run `supabase_schema.sql` in the SQL editor to provision the `platforms`, `scrape_runs`, and `products` tables (with indexes on product IDs and timestamps).
+2. Copy `.env.example` to `.env` and fill in `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` locally. Railway uses the same variable names—add them in the Railway dashboard so deployments can reach Supabase.
+3. Enable persistence in the ingestion runner with:
+   ```bash
+   python ingestion_runner.py --use-supabase --platform-slug gumroad
+   ```
+   The runner records each scrape run and upserts/deduplicates products by the platform-specific product ID parsed from the URL.
+4. To review historical data, launch the Streamlit history view (requires the same Supabase env vars):
+   ```bash
+   streamlit run history_app.py
+   ```
+   Filter runs, inspect products, and export CSV directly from the UI.

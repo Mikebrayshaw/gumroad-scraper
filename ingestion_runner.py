@@ -12,12 +12,14 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from sqlalchemy import Column, DateTime, Float, Integer, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from gumroad_scraper import Product, scrape_discover_page
+from supabase_utils import SupabasePersistence
 
 Base = declarative_base()
 
@@ -129,6 +131,19 @@ def ensure_database(database_url: str):
     return sessionmaker(bind=engine)
 
 
+def derive_category_labels(url: str) -> Tuple[str, str]:
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    query_term = params.get("query", [None])[0]
+    category = params.get("category", [None])[0]
+    subcategory = params.get("subcategory", [""])[0]
+    if query_term:
+        return f"query:{query_term}", subcategory
+    if category:
+        return category, subcategory
+    return "discover", subcategory
+
+
 def upsert_products(session: Session, products: Iterable[Product], crawled_at: datetime) -> dict:
     summary = {"inserted": 0, "updated": 0, "unchanged": 0}
     for product in products:
@@ -176,15 +191,34 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Override rate_limit_ms for every job",
     )
+    parser.add_argument(
+        "--use-supabase",
+        action="store_true",
+        help="Persist runs and products to Supabase (requires SUPABASE_URL and keys)",
+    )
+    parser.add_argument(
+        "--platform-slug",
+        type=str,
+        default="gumroad",
+        help="Platform slug for Supabase platform records",
+    )
     return parser.parse_args()
 
 
-async def run_job(job: dict, session_factory, args: argparse.Namespace, default_rate_limit_ms: int):
+async def run_job(
+    job: dict,
+    session_factory,
+    args: argparse.Namespace,
+    default_rate_limit_ms: int,
+    persistence: Optional[SupabasePersistence],
+):
     crawled_at = datetime.utcnow()
     max_products = args.max_products or job.get("max_products", 100)
     rate_limit_ms = args.rate_limit or job.get("rate_limit_ms", default_rate_limit_ms)
     get_details = job.get("get_detailed_ratings", True)
     url = job["category_url"]
+    category_label, subcategory_label = derive_category_labels(url)
+    run_id = persistence.start_run(category_label, subcategory_label) if persistence else None
 
     print("=" * 80)
     print(f"Job: {job.get('name', 'unnamed')} | Schedule: {job.get('schedule', 'unspecified')}")
@@ -203,10 +237,21 @@ async def run_job(job: dict, session_factory, args: argparse.Namespace, default_
     with session_factory() as session:
         summary = upsert_products(session, products, crawled_at)
 
+    supabase_summary = None
+    if persistence and run_id:
+        supabase_summary = persistence.upsert_products(run_id, products)
+        totals = {"total": len(products)}
+        if supabase_summary:
+            totals.update(supabase_summary)
+        persistence.complete_run(run_id, totals)
+
     print(
         f"Stored {len(products)} products | Inserted: {summary['inserted']} | "
         f"Updated: {summary['updated']} | Unchanged: {summary['unchanged']}"
     )
+    if supabase_summary:
+        print("Supabase summary:")
+        print(supabase_summary)
 
 
 def main():
@@ -220,10 +265,14 @@ def main():
         return
 
     session_factory = ensure_database(args.database_url)
+    persistence = SupabasePersistence(platform_slug=args.platform_slug) if args.use_supabase else None
     default_rate_limit_ms = config.get("default_rate_limit_ms", 500)
     asyncio.run(
         asyncio.gather(
-            *(run_job(job, session_factory, args, default_rate_limit_ms) for job in jobs)
+            *(
+                run_job(job, session_factory, args, default_rate_limit_ms, persistence)
+                for job in jobs
+            )
         )
     )
 
