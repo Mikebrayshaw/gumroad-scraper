@@ -14,6 +14,8 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 from playwright.async_api import async_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
 
+from categories import CATEGORY_TREE, build_discover_url, category_url_map
+
 
 @dataclass
 class Product:
@@ -661,27 +663,8 @@ def save_to_csv(products: list[Product], filename: str):
     print(f"\nSaved {len(products)} products to {filename}")
 
 
-# Gumroad category URLs - using direct category pages
-CATEGORY_URLS = {
-    'design': 'https://gumroad.com/design',
-    '3d': 'https://gumroad.com/3d',
-    'drawing': 'https://gumroad.com/drawing-and-painting',
-    'software': 'https://gumroad.com/software-development',
-    'music': 'https://gumroad.com/music-and-sound-design',
-    'writing': 'https://gumroad.com/writing-and-publishing',
-    'education': 'https://gumroad.com/education',
-    'photography': 'https://gumroad.com/photography',
-    'comics': 'https://gumroad.com/comics-and-graphic-novels',
-    'fitness': 'https://gumroad.com/fitness-and-health',
-    'films': 'https://gumroad.com/films',
-    'audio': 'https://gumroad.com/audio',
-    'games': 'https://gumroad.com/gaming',
-    'fiction': 'https://gumroad.com/fiction-books',
-    'self-improvement': 'https://gumroad.com/self-improvement',
-    'business': 'https://gumroad.com/business-and-money',
-    'other': 'https://gumroad.com/other',
-    'discover': 'https://gumroad.com/discover',
-}
+# Gumroad category URLs aligned with the Streamlit dropdown
+CATEGORY_URLS = category_url_map()
 
 
 def parse_args():
@@ -689,7 +672,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Scrape product data from Gumroad discover pages.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
   python gumroad_scraper.py                     # Scrape 'design' category (default)
   python gumroad_scraper.py -c software         # Scrape 'software' category
@@ -698,9 +681,7 @@ Examples:
   python gumroad_scraper.py -c design --fast    # Fast mode (no detailed product pages)
 
 Available categories:
-  design, 3d, drawing, software, music, writing, education, photography,
-  comics, fitness, films, audio, games, fiction, self-improvement, business,
-  other, discover
+  {', '.join(CATEGORY_URLS.keys())}
         """
     )
     parser.add_argument(
