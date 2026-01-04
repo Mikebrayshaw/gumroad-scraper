@@ -56,3 +56,11 @@ The scraper saves a CSV with all collected fields and prints a run summary that 
    streamlit run history_app.py
    ```
    Filter runs, inspect products, and export CSV directly from the UI.
+
+## Adding new marketplaces (Whop scaffolding included)
+- The ingestion runner now routes jobs through a platform registry (`platforms.py`).
+  Each job in `ingestion_config.json` may declare a `"platform"` (defaults to `gumroad`).
+- Gumroad scrapes continue to work unchanged. A Whop scraper stub lives in `whop_scraper.py` and
+  already matches the ingestion runner’s call signature. Implement Playwright navigation and parsing
+  inside that file, then set `"platform": "whop"` on a job pointing to a Whop listing or search URL.
+  The `Product` dataclass is shared so persistence and CSV exports continue to work across platforms.
