@@ -351,7 +351,7 @@ async def get_product_details(
             star_text_sources.extend([t for t in aria_texts if t])
 
             try:
-                inner_texts = await page.locator('text=/[1-5]\s*star/i').all_inner_texts()
+                inner_texts = await page.locator(r"text=/[1-5]\s*star/i").all_inner_texts()
                 star_text_sources.extend([' '.join(t.split()) for t in inner_texts if t.strip()])
             except Exception:
                 pass
