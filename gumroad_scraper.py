@@ -148,6 +148,59 @@ def parse_sales(sales_str: str) -> Optional[int]:
     return None
 
 
+async def extract_product_name(card, product_url: str) -> str:
+    """Extract the visible product title from a card element."""
+    product_name = "Unknown"
+    name_selectors = [
+        'a.stretched-link h2[itemprop="name"]:not([hidden]):not(.hidden)',
+        'a.stretched-link h3[itemprop="name"]:not([hidden]):not(.hidden)',
+        'a.stretched-link h4[itemprop="name"]:not([hidden]):not(.hidden)',
+        'header h2[itemprop="name"]:not([hidden]):not(.hidden)',
+        'header h3[itemprop="name"]:not([hidden]):not(.hidden)',
+        'header h4[itemprop="name"]:not([hidden]):not(.hidden)',
+        '[itemprop="name"]:not([hidden]):not(.hidden)',
+        'a.stretched-link h2.line-clamp-3',
+        'a.stretched-link h4.line-clamp-4',
+        '.line-clamp-3',
+        '.line-clamp-4',
+        '.product-name',
+    ]
+
+    for selector in name_selectors:
+        name_elem = await card.query_selector(selector)
+        if name_elem:
+            text = await name_elem.inner_text()
+            text = text.strip()
+            if text and text != "Unknown" and len(text) > 1:
+                product_name = text
+                break
+
+    if product_name == "Unknown":
+        link = await card.query_selector('a.stretched-link, a[href*="/l/"]')
+        if link:
+            link_text = (await link.inner_text() or '').strip()
+            if link_text:
+                product_name = link_text
+            else:
+                heading_in_link = await link.query_selector('h1, h2, h3, h4, h5, h6')
+                if heading_in_link:
+                    heading_text = (await heading_in_link.inner_text() or '').strip()
+                    if heading_text:
+                        product_name = heading_text
+
+    product_name = product_name.replace('&amp;', '&').replace('&#39;', "'").replace('\n', ' ')
+    product_name = ' '.join(product_name.split())
+
+    if not product_name or product_name == "Unknown":
+        card_html = await card.inner_html()
+        snippet = card_html[:400].replace('\n', ' ')
+        print(f"  Warning: empty or unknown title for {product_url}. Card snippet: {snippet}")
+    else:
+        print(f"  Title scraped for {product_url}: '{product_name}'")
+
+    return product_name
+
+
 async def get_product_details(
     page: Page,
     product_url: str,
@@ -316,6 +369,15 @@ async def scrape_discover_page(
         await page.goto(category_url, wait_until='networkidle', timeout=30000)
         await page.wait_for_timeout(3000)
 
+        # Ensure product cards have rendered before scraping
+        try:
+            await page.wait_for_selector(
+                'article h2[itemprop="name"], article h3[itemprop="name"], article h4[itemprop="name"], article h2.line-clamp-3, article h4.line-clamp-4',
+                timeout=15000,
+            )
+        except PlaywrightTimeout:
+            print("Warning: Product title selector did not appear before timeout; continuing with best effort.")
+
         # Extract category from URL
         category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
         main_category = category_match.group(1) if category_match else 'discover'
@@ -367,43 +429,7 @@ async def scrape_discover_page(
 
                     # Extract product name - handle both discover grid cards (h2 titles)
                     # and search result cards (h4 titles inside the stretched link).
-                    product_name = "Unknown"
-                    name_selectors = [
-                        'header h2[itemprop="name"]:not([hidden])',
-                        'header h3[itemprop="name"]:not([hidden])',
-                        'header h4[itemprop="name"]:not([hidden])',
-                        '[itemprop="name"]:not([hidden])',  # Schema.org markup (skip hidden seller names)
-                        'header h2',
-                        'header h3',
-                        'header h4',
-                        '.line-clamp-3',  # Discover grid
-                        '.line-clamp-4',  # Search results
-                        '.product-name',
-                    ]
-                    for selector in name_selectors:
-                        name_elem = await card.query_selector(selector)
-                        if name_elem:
-                            text = await name_elem.inner_text()
-                            text = text.strip()
-                            if text and text != "Unknown" and len(text) > 1:
-                                product_name = text
-                                break
-
-                    # If still unknown, try to derive the name from the product link
-                    if product_name == "Unknown" and link:
-                        link_text = (await link.inner_text() or '').strip()
-                        if link_text:
-                            product_name = link_text
-                        else:
-                            heading_in_link = await link.query_selector('h1, h2, h3, h4, h5, h6')
-                            if heading_in_link:
-                                heading_text = (await heading_in_link.inner_text() or '').strip()
-                                if heading_text:
-                                    product_name = heading_text
-
-                    # Clean up product name
-                    product_name = product_name.replace('&amp;', '&').replace('&#39;', "'").replace('\n', ' ')
-                    product_name = ' '.join(product_name.split())  # Normalize whitespace
+                    product_name = await extract_product_name(card, product_url)
 
                     # If still unknown, try to get from the link aria-label or title
                     if product_name == "Unknown":

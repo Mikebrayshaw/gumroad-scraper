@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <body>
+    <main>
+      <div class="grid">
+        <article class="relative flex flex-col rounded border border-border bg-background">
+          <a href="https://example.gumroad.com/l/sample-one" class="stretched-link">
+            <h4 itemprop="name" class="line-clamp-4 lg:text-xl">Sample Product One</h4>
+          </a>
+          <a href="https://example.gumroad.com" itemprop="seller" hidden="">
+            <div itemprop="name" hidden="">Hidden Seller Name</div>
+          </a>
+        </article>
+        <article class="relative flex flex-col rounded border border-border bg-background">
+          <a href="https://example.gumroad.com/l/sample-two" class="stretched-link">
+            <h2 itemprop="name" class="line-clamp-3">Second Product Visible</h2>
+          </a>
+          <div itemprop="seller">
+            <div itemprop="name" class="hidden">Invisible Seller</div>
+          </div>
+        </article>
+      </div>
+    </main>
+  </body>
+</html>
