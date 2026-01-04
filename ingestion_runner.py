@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from sqlalchemy import Column, DateTime, Float, Integer, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-from gumroad_scraper import Product
+from gumroad_scraper import Product, save_to_csv
 from platforms import get_scraper
 from supabase_utils import SupabasePersistence
 
@@ -203,6 +203,11 @@ def parse_args() -> argparse.Namespace:
         default="gumroad",
         help="Platform slug for Supabase platform records",
     )
+    parser.add_argument(
+        "--save-csv-dir",
+        type=str,
+        help="Optional directory to write a timestamped CSV for each job run",
+    )
     return parser.parse_args()
 
 
@@ -238,6 +243,15 @@ async def run_job(
         rate_limit_ms=rate_limit_ms,
     )
 
+    csv_path = None
+    if args.save_csv_dir:
+        output_dir = Path(args.save_csv_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = job.get("name") or category_label or platform
+        safe_name = safe_name.replace("/", "_").replace(" ", "_")
+        csv_path = output_dir / f"{safe_name}_{crawled_at.strftime('%Y%m%d_%H%M%S')}.csv"
+        save_to_csv(products, str(csv_path))
+
     with session_factory() as session:
         summary = upsert_products(session, products, crawled_at)
 
@@ -253,6 +267,8 @@ async def run_job(
         f"Stored {len(products)} products | Inserted: {summary['inserted']} | "
         f"Updated: {summary['updated']} | Unchanged: {summary['unchanged']}"
     )
+    if csv_path:
+        print(f"Saved CSV: {csv_path}")
     if supabase_summary:
         print("Supabase summary:")
         print(supabase_summary)
