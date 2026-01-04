@@ -4,12 +4,12 @@ Web UI for scraping product data from Gumroad discover pages.
 """
 
 import asyncio
-from urllib.parse import urlencode
 
 import pandas as pd
 import streamlit as st
 from dataclasses import asdict
 
+from categories import CATEGORY_BY_LABEL, CATEGORY_TREE, Category, Subcategory, build_discover_url
 from gumroad_scraper import (
     scrape_discover_page,
     Product,
@@ -29,259 +29,34 @@ st.markdown("Scrape product data from Gumroad discover pages.")
 st.sidebar.header("Settings")
 
 
-CATEGORY_STRUCTURE = {
-    "3D": {
-        "slug": "3d",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Assets", "assets"),
-            ("Characters", "characters"),
-            ("Environments", "environments"),
-            ("Materials & Textures", "materials-and-textures"),
-            ("Models", "models"),
-            ("Props", "props"),
-        ],
-    },
-    "Audio": {
-        "slug": "audio",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Beats", "beats"),
-            ("Loops & Samples", "loops-and-samples"),
-            ("Mixing & Mastering", "mixing-and-mastering"),
-            ("Sound Effects", "sound-effects"),
-            ("Vocal Presets", "vocal-presets"),
-        ],
-    },
-    "Business & Money": {
-        "slug": "business-and-money",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Entrepreneurship", "entrepreneurship"),
-            ("Finance & Investing", "finance-and-investing"),
-            ("Freelancing", "freelancing"),
-            ("Marketing", "marketing"),
-            ("Sales", "sales"),
-            ("Startups", "startups"),
-        ],
-    },
-    "Comics & Graphic Novels": {
-        "slug": "comics-and-graphic-novels",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Anthologies", "anthologies"),
-            ("Graphic Novels", "graphic-novels"),
-            ("Manga", "manga"),
-            ("Webcomics", "webcomics"),
-            ("Zines", "zines"),
-        ],
-    },
-    "Design": {
-        "slug": "design",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Icons", "icons"),
-            ("Templates", "templates"),
-            ("Fonts", "fonts"),
-            ("UI Kits", "ui-kits"),
-            ("Illustrations", "illustrations"),
-            ("Mockups", "mockups"),
-        ],
-    },
-    "Drawing & Painting": {
-        "slug": "drawing-and-painting",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Brushes", "brushes"),
-            ("Procreate Brushes", "procreate-brushes"),
-            ("Photoshop Brushes", "photoshop-brushes"),
-            ("Tutorials", "tutorials"),
-            ("Coloring Pages", "coloring-pages"),
-        ],
-    },
-    "Education": {
-        "slug": "education",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Courses", "courses"),
-            ("Study Guides", "study-guides"),
-            ("Homeschool", "homeschool"),
-            ("Lesson Plans", "lesson-plans"),
-            ("Worksheets", "worksheets"),
-        ],
-    },
-    "Fiction Books": {
-        "slug": "fiction-books",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Fantasy", "fantasy"),
-            ("Romance", "romance"),
-            ("Science Fiction", "science-fiction"),
-            ("Mystery & Thriller", "mystery-and-thriller"),
-            ("Young Adult", "young-adult"),
-        ],
-    },
-    "Films": {
-        "slug": "films",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Filmmaking", "filmmaking"),
-            ("Editing", "editing"),
-            ("VFX", "vfx"),
-            ("Color Grading", "color-grading"),
-            ("Screenwriting", "screenwriting"),
-        ],
-    },
-    "Fitness & Health": {
-        "slug": "fitness-and-health",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Workout Programs", "workout-programs"),
-            ("Nutrition", "nutrition"),
-            ("Yoga", "yoga"),
-            ("Meditation", "meditation"),
-            ("Meal Plans", "meal-plans"),
-        ],
-    },
-    "Games": {
-        "slug": "gaming",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Game Assets", "game-assets"),
-            ("Game Templates", "game-templates"),
-            ("Tabletop RPGs", "tabletop-rpgs"),
-            ("Rulebooks", "rulebooks"),
-            ("Tools & Plugins", "tools-and-plugins"),
-        ],
-    },
-    "Music & Sound Design": {
-        "slug": "music-and-sound-design",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Sample Packs", "sample-packs"),
-            ("Presets", "presets"),
-            ("Plugins", "plugins"),
-            ("Loops", "loops"),
-            ("Beatmaking", "beatmaking"),
-        ],
-    },
-    "Nonfiction Books": {
-        "slug": "nonfiction-books",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Biography & Memoir", "biography-and-memoir"),
-            ("Business", "business"),
-            ("Self Help", "self-help"),
-            ("History & Politics", "history-and-politics"),
-            ("Guides & Manuals", "guides-and-manuals"),
-        ],
-    },
-    "Photography": {
-        "slug": "photography",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Presets", "presets"),
-            ("LUTs", "luts"),
-            ("Overlays", "overlays"),
-            ("Tutorials", "tutorials"),
-            ("Stock Photos", "stock-photos"),
-        ],
-    },
-    "Podcasts": {
-        "slug": "podcasts",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Business", "business"),
-            ("Education", "education"),
-            ("Entertainment", "entertainment"),
-            ("News", "news"),
-            ("Technology", "technology"),
-        ],
-    },
-    "Productivity": {
-        "slug": "productivity",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Notion Templates", "notion-templates"),
-            ("Planners", "planners"),
-            ("Journals", "journals"),
-            ("Trackers", "trackers"),
-            ("Spreadsheets", "spreadsheets"),
-        ],
-    },
-    "Programming & Tech": {
-        "slug": "programming-and-tech",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Web Development", "web-development"),
-            ("AI & Machine Learning", "ai-and-machine-learning"),
-            ("Data Science", "data-science"),
-            ("Automation", "automation"),
-            ("Game Development", "game-development"),
-        ],
-    },
-    "Self Improvement": {
-        "slug": "self-improvement",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Mindfulness", "mindfulness"),
-            ("Habits", "habits"),
-            ("Relationships", "relationships"),
-            ("Mental Health", "mental-health"),
-            ("Productivity", "productivity"),
-        ],
-    },
-    "Software": {
-        "slug": "software",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Apps", "apps"),
-            ("Plugins", "plugins"),
-            ("Scripts", "scripts"),
-            ("SaaS", "saas"),
-            ("Tools", "tools"),
-        ],
-    },
-    "Worldbuilding": {
-        "slug": "worldbuilding",
-        "subcategories": [
-            ("All Subcategories", ""),
-            ("Maps", "maps"),
-            ("Lore", "lore"),
-            ("Characters", "characters"),
-            ("RPG Systems", "rpg-systems"),
-            ("Reference Packs", "reference-packs"),
-        ],
-    },
-}
-
-category_options = list(CATEGORY_STRUCTURE.keys())
+category_options = [cat.label for cat in CATEGORY_TREE]
 category_label = st.sidebar.selectbox(
     "Category",
     options=category_options,
     index=0,
 )
 
-selected_category = CATEGORY_STRUCTURE[category_label]
-subcategory_options = selected_category["subcategories"]
-category_slug = selected_category["slug"]
+selected_category: Category = CATEGORY_BY_LABEL[category_label]
+subcategory_options: tuple[Subcategory, ...] = selected_category.subcategories
+category_slug = selected_category.slug
 
 # Reset subcategory when category changes
 if "last_category" not in st.session_state:
     st.session_state.last_category = category_label
 if "subcategory_choice" not in st.session_state:
-    st.session_state.subcategory_choice = subcategory_options[0][0]
+    st.session_state.subcategory_choice = subcategory_options[0].label
 if st.session_state.last_category != category_label:
     st.session_state.last_category = category_label
-    st.session_state.subcategory_choice = subcategory_options[0][0]
+    st.session_state.subcategory_choice = subcategory_options[0].label
 
 subcategory_label = st.sidebar.selectbox(
     "Subcategory",
-    options=[label for label, _ in subcategory_options],
+    options=[subcategory.label for subcategory in subcategory_options],
+    format_func=lambda value: value if value == "All Subcategories" else f" • {value}",
     key="subcategory_choice",
 )
 
-subcategory_slug_lookup = {label: slug for label, slug in subcategory_options}
+subcategory_slug_lookup = {subcategory.label: subcategory.slug for subcategory in subcategory_options}
 subcategory_slug = subcategory_slug_lookup.get(subcategory_label, "")
 
 max_products = st.sidebar.number_input(
@@ -324,11 +99,7 @@ def run_scraper(
 ) -> list[Product]:
     """Run the scraper and return products."""
 
-    query_params = {"category": category_slug}
-    if subcategory_slug:
-        query_params["subcategory"] = subcategory_slug
-
-    url = f"https://gumroad.com/discover?{urlencode(query_params)}"
+    url = build_discover_url(category_slug, subcategory_slug)
 
     # Run async scraper in sync context
     loop = asyncio.new_event_loop()
