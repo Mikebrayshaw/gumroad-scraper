@@ -36,12 +36,17 @@ python gumroad_scraper.py --all --max-products 25
 python gumroad_scraper.py --fast
 ```
 
+### Progress bar (on by default)
+```bash
+python gumroad_scraper.py --no-progress  # disable if your log sink dislikes TTY updates
+```
+
 ### Custom output filename
 ```bash
 python gumroad_scraper.py --output gumroad_design.csv
 ```
 
-The scraper saves a CSV with all collected fields and prints a run summary that includes averages, sales totals, and the output path.
+The scraper saves a CSV with all collected fields and prints a run summary that includes averages, sales totals, and the output path. Detailed runs open each product page (with a delay between requests) to capture ratings and sales data, which is the slowest part of a full scrape—use `--fast` when you only need card metadata.
 
 ## Supabase persistence & Railway deployment
 1. Create a Supabase project and run `supabase_schema.sql` in the SQL editor to provision the `platforms`, `scrape_runs`, and `products` tables (with indexes on product IDs and timestamps).

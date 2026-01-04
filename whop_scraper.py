@@ -19,6 +19,7 @@ async def scrape_whop_search(
     max_products: int = 100,
     get_detailed_ratings: bool = False,
     rate_limit_ms: int = 500,
+    show_progress: bool = False,
 ) -> List[Product]:
     """Scrape Whop listings.
 

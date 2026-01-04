@@ -12,7 +12,7 @@ from typing import Dict, List
 from gumroad_scraper import Product, scrape_discover_page
 from whop_scraper import scrape_whop_search
 
-ScraperFn = Callable[[str, int, bool, int], Awaitable[List[Product]]]
+ScraperFn = Callable[..., Awaitable[List[Product]]]
 
 _SCRAPERS: Dict[str, ScraperFn] = {
     "gumroad": scrape_discover_page,

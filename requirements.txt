@@ -6,3 +6,4 @@ psycopg2-binary>=2.9
 supabase>=2.4.0
 crewai>=0.30.0
 langchain-openai>=0.1.0
+tqdm>=4.66
