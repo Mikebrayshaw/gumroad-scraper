@@ -1,0 +1,27 @@
+{
+  "default_rate_limit_ms": 500,
+  "jobs": [
+    {
+      "name": "design-daily",
+      "category_url": "https://gumroad.com/discover?category=design",
+      "max_products": 150,
+      "get_detailed_ratings": true,
+      "schedule": "daily"
+    },
+    {
+      "name": "ai-query-realtime",
+      "category_url": "https://gumroad.com/discover?query=ai",
+      "max_products": 60,
+      "get_detailed_ratings": false,
+      "rate_limit_ms": 300,
+      "schedule": "realtime"
+    },
+    {
+      "name": "productivity-daily",
+      "category_url": "https://gumroad.com/discover?category=productivity",
+      "max_products": 100,
+      "get_detailed_ratings": true,
+      "schedule": "daily"
+    }
+  ]
+}
