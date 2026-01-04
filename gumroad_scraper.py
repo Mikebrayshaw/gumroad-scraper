@@ -455,7 +455,7 @@ async def scrape_discover_page(
         scroll_attempts = 0
         max_scroll_attempts = 200  # Increased for large scrapes
         no_new_cards_count = 0
-        last_card_count = 0
+        last_product_count = 0
 
         while len(products) < max_products and scroll_attempts < max_scroll_attempts:
             # Find all product cards using article elements
@@ -687,16 +687,13 @@ async def scrape_discover_page(
             except:
                 pass  # Continue even if timeout
 
-            # Check current card count after scroll
-            new_cards = await page.query_selector_all('article')
-            new_card_count = len(new_cards)
-
-            # Check if we're making progress (new cards loaded)
-            if new_card_count > last_card_count:
-                # New cards loaded - reset counter
+            # Check if we're making progress (new unique products scraped)
+            if len(products) > last_product_count:
                 no_new_cards_count = 0
-                last_card_count = new_card_count
-                print(f"  Loaded {new_card_count - current_card_count} new cards (total: {new_card_count})")
+                new_count = len(products)
+                added = new_count - last_product_count
+                last_product_count = new_count
+                print(f"  Added {added} new products (unique total: {len(products)})")
             else:
                 no_new_cards_count += 1
                 # Try more aggressive scrolling when stuck
@@ -709,7 +706,10 @@ async def scrape_discover_page(
 
                 # If stuck for 15 consecutive attempts, give up
                 if no_new_cards_count >= 15:
-                    print(f"No new cards loaded after {no_new_cards_count} scroll attempts. Reached end of results.")
+                    print(
+                        "No new products discovered after "
+                        f"{no_new_cards_count} scroll attempts. Reached end of results."
+                    )
                     break
 
         await browser.close()
