@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from dataclasses import asdict
 
-from categories import CATEGORY_BY_LABEL, CATEGORY_TREE, Category, Subcategory, build_discover_url
+from analysis_ui import render_analysis_block
 from gumroad_scraper import (
     scrape_discover_page,
     Product,
@@ -453,4 +453,54 @@ with tab_watchlist:
                     remove_from_watchlist(item.id)
                     st.rerun()
 
-            st.markdown("---")
+    # Data table
+    st.subheader("Results")
+
+    # Select columns to display
+    display_cols = [
+        "product_name",
+        "creator_name",
+        "price_usd",
+        "average_rating",
+        "total_reviews",
+        "sales_count",
+        "estimated_revenue",
+    ]
+
+    st.dataframe(
+        df[display_cols],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "product_name": st.column_config.TextColumn("Product", width="large"),
+            "creator_name": st.column_config.TextColumn("Creator", width="medium"),
+            "price_usd": st.column_config.NumberColumn("Price (USD)", format="$%.2f"),
+            "average_rating": st.column_config.NumberColumn("Rating", format="%.1f ⭐"),
+            "total_reviews": st.column_config.NumberColumn("Reviews"),
+            "sales_count": st.column_config.NumberColumn("Sales", format="%d"),
+            "estimated_revenue": st.column_config.NumberColumn("Est. Revenue", format="$%.0f"),
+        },
+    )
+
+    # Download button
+    csv = df.to_csv(index=False)
+    st.download_button(
+        label="📥 Download CSV",
+        data=csv,
+        file_name=f"gumroad_{category_slug}{f'_{subcategory_slug}' if subcategory_slug else ''}.csv",
+        mime="text/csv",
+    )
+
+    # Expandable full data view
+    with st.expander("View All Columns"):
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.subheader("Analyze with CrewAI")
+    render_analysis_block(
+        df.to_dict(orient="records"),
+        dataset_id=f"scrape-{category_slug}-{subcategory_slug or 'all'}",
+        source_label="Current scrape run",
+    )
+
+else:
+    st.info("Select a category and click **Scrape** to get started.")
