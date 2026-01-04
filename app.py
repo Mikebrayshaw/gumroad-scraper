@@ -11,6 +11,7 @@ import streamlit as st
 from dataclasses import asdict
 
 from analysis_ui import render_analysis_block
+from categories import CATEGORY_BY_LABEL, CATEGORY_TREE, Category, Subcategory, build_discover_url
 from gumroad_scraper import (
     scrape_discover_page,
     Product,
