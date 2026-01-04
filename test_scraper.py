@@ -1,11 +1,20 @@
 """Quick test of Gumroad scraper - get 10 products without details."""
 import asyncio
+import os
 import sys
 import re
+
+import pytest
 from playwright.async_api import async_playwright
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
+
+
+pytestmark = pytest.mark.skipif(
+    not os.getenv("RUN_SCRAPER_TEST"),
+    reason="Network scrape disabled by default; set RUN_SCRAPER_TEST=1 to enable.",
+)
 
 
 async def test_scrape():

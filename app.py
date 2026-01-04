@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 from dataclasses import asdict
 
+from analysis_ui import render_analysis_block
 from gumroad_scraper import (
     scrape_discover_page,
     Product,
@@ -452,6 +453,13 @@ if st.session_state.results:
     # Expandable full data view
     with st.expander("View All Columns"):
         st.dataframe(df, use_container_width=True, hide_index=True)
+
+    st.subheader("Analyze with CrewAI")
+    render_analysis_block(
+        df.to_dict(orient="records"),
+        dataset_id=f"scrape-{category_slug}-{subcategory_slug or 'all'}",
+        source_label="Current scrape run",
+    )
 
 else:
     st.info("Select a category and click **Scrape** to get started.")

@@ -3,6 +3,7 @@
 import pandas as pd
 import streamlit as st
 
+from analysis_ui import render_analysis_block
 from supabase_utils import get_supabase_client
 
 st.set_page_config(page_title="Gumroad Scraper History", page_icon="🗂️", layout="wide")
@@ -87,4 +88,11 @@ st.download_button(
     file_name=f"gumroad_scrape_{selected_run}.csv",
     mime="text/csv",
     type="primary",
+)
+
+st.subheader("Analyze run with CrewAI")
+render_analysis_block(
+    products_df.to_dict(orient="records"),
+    dataset_id=selected_run,
+    source_label=f"Supabase run {selected_run}",
 )
