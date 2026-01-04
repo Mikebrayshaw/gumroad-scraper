@@ -12,7 +12,13 @@ import random
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Optional
-from playwright.async_api import async_playwright, Page, Browser, TimeoutError as PlaywrightTimeout
+from playwright.async_api import (
+    Browser,
+    ElementHandle,
+    Page,
+    TimeoutError as PlaywrightTimeout,
+    async_playwright,
+)
 
 from categories import CATEGORY_TREE, build_discover_url, category_url_map
 
@@ -57,6 +63,48 @@ CURRENCY_TO_USD = {
     'INR': 0.012,
     '₹': 0.012,
 }
+
+
+async def extract_product_name(card: ElementHandle, product_url: str) -> str:
+    """Extract a product name from a product card element.
+
+    The function looks for common Gumroad heading patterns first (h2/h4 with
+    itemprop markers), then falls back to generic headings and finally derives
+    a readable name from the product URL slug. Returns "Unknown" if no
+    reasonable name can be found.
+    """
+
+    title_selectors = [
+        'h2[itemprop="name"]',
+        'h4[itemprop="name"]',
+        '[itemprop="name"] h2',
+        '[itemprop="name"] h4',
+        '[itemprop="name"]',
+        'h2',
+        'h3',
+        'h4',
+    ]
+
+    for selector in title_selectors:
+        title_elem = await card.query_selector(selector)
+        if title_elem:
+            title_text = await title_elem.inner_text()
+            if title_text:
+                cleaned = title_text.strip()
+                if cleaned:
+                    return cleaned
+
+    # Fallback: infer a readable title from the URL slug
+    if product_url:
+        slug_match = re.search(r"/l/([\w-]+)", product_url)
+        if slug_match:
+            slug = slug_match.group(1)
+            if slug:
+                readable = slug.replace('-', ' ').strip()
+                if readable:
+                    return readable.title()
+
+    return "Unknown"
 
 
 def parse_price(price_str: str) -> tuple[float, str, str]:
