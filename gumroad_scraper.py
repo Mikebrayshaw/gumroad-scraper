@@ -113,8 +113,21 @@ def parse_rating(rating_str: str) -> tuple[Optional[float], int]:
 
     # Clean up - remove newlines and extra spaces
     rating_str = ' '.join(rating_str.split())
+    rating_str = re.sub(r'[^\d().]+', ' ', rating_str)
+    rating_str = re.sub(r'/\s*5', ' ', rating_str)
+    rating_str = re.sub(r'([\d.]+)\s+\d+(?=\s*\()', r'\1', rating_str)
+    rating_str = ' '.join(rating_str.split())
+    # Trim leading/trailing non-numeric characters (e.g., stars or emojis)
+    rating_str = re.sub(r'^[^\d]+', '', rating_str)
+    rating_str = re.sub(r'[^\d)]+$', '', rating_str)
 
     # Try to extract rating and count
+    primary_match = re.search(r'([\d.]+)[^\d]+\(\s*(\d+)', rating_str)
+    if primary_match:
+        rating = float(primary_match.group(1))
+        count = int(primary_match.group(2))
+        return rating, count
+
     # Pattern: "4.8(123)" or "4.8 (123)" or "4.8(123 ratings)"
     match = re.search(r'([\d.]+)\s*\(?(\d+)', rating_str)
     if match:
@@ -148,6 +161,60 @@ def parse_sales(sales_str: str) -> Optional[int]:
     return None
 
 
+def parse_rating_breakdown(
+    star_text_sources: list[str],
+    total_reviews_for_calc: Optional[int] = None,
+) -> dict:
+    """Parse rating breakdown percentages/counts from a collection of texts."""
+    details = {
+        'rating_1_star': 0,
+        'rating_2_star': 0,
+        'rating_3_star': 0,
+        'rating_4_star': 0,
+        'rating_5_star': 0,
+    }
+
+    counts_found: dict[int, float] = {}
+
+    for text in star_text_sources:
+        normalized = ' '.join(text.split())
+        for star in range(1, 6):
+            if details[f'rating_{star}_star']:
+                continue  # Already found for this star
+
+            if not re.search(rf'{star}\s*stars?', normalized, re.IGNORECASE):
+                continue
+
+            percent_match = re.search(r'(\d+(?:\.\d+)?)\s*%', normalized)
+            if percent_match:
+                details[f'rating_{star}_star'] = int(round(float(percent_match.group(1))))
+                continue
+
+            count_match = re.search(r'(\d+[\d,]*)\s*(?:reviews?|ratings?)', normalized, re.IGNORECASE)
+            if count_match:
+                value = float(count_match.group(1).replace(',', ''))
+                counts_found[star] = value
+                continue
+
+            cleaned = re.sub(rf'^[^0-9]*{star}\s*stars?\s*', '', normalized, flags=re.IGNORECASE)
+            number_candidates = [n for n in re.findall(r'\d+(?:\.\d+)?', cleaned) if int(float(n)) != star]
+            if number_candidates:
+                value = float(number_candidates[-1])
+                counts_found[star] = value
+
+    if counts_found:
+        for star, count_value in counts_found.items():
+            if details[f'rating_{star}_star']:
+                continue
+            if total_reviews_for_calc and total_reviews_for_calc > 0:
+                percent = int(round((count_value / total_reviews_for_calc) * 100))
+                details[f'rating_{star}_star'] = percent
+            else:
+                details[f'rating_{star}_star'] = int(round(count_value))
+
+    return details
+
+
 async def get_product_details(
     page: Page,
     product_url: str,
@@ -171,6 +238,7 @@ async def get_product_details(
     for attempt in range(max_retries):
         try:
             await page.goto(product_url, wait_until='domcontentloaded', timeout=20000)
+            await page.wait_for_load_state('networkidle')
             await page.wait_for_timeout(2000)  # Wait for dynamic content
 
             # Get all visible text on the page
@@ -198,69 +266,57 @@ async def get_product_details(
             total_reviews_detail = int(total_reviews_match.group(1).replace(',', '')) if total_reviews_match else None
             total_reviews_for_calc = total_reviews_detail or total_reviews_hint
 
+            # Proactively expand/hover rating breakdown sections
+            rating_triggers = [
+                'button:has-text("ratings")',
+                'button:has-text("reviews")',
+                '[data-testid*="rating"]',
+                '.rating-summary button',
+            ]
+            for trigger in rating_triggers:
+                try:
+                    locator = page.locator(trigger).first
+                    if await locator.count():
+                        await locator.hover(timeout=1500)
+                        await locator.click(timeout=1500)
+                        await page.wait_for_timeout(500)
+                except Exception:
+                    continue
+
+            # Wait for rating breakdown to render if it is lazy-loaded
+            for _ in range(3):
+                try:
+                    await page.wait_for_selector('text=/[1-5] star/', timeout=1500)
+                    break
+                except PlaywrightTimeout:
+                    await page.wait_for_timeout(500)
+
             # Collect candidate texts for rating breakdown
             star_text_sources = []
 
-            # aria-label/title attributes often include the percentages even when not visible
             aria_texts = await page.eval_on_selector_all(
                 '[aria-label*="star" i], [title*="star" i]',
                 'els => els.map(el => (el.getAttribute("aria-label") || el.getAttribute("title") || ""))'
             )
             star_text_sources.extend([t for t in aria_texts if t])
 
-            # Visible text nodes that mention stars
             try:
                 inner_texts = await page.locator('text=/[1-5]\s*star/i').all_inner_texts()
                 star_text_sources.extend([' '.join(t.split()) for t in inner_texts if t.strip()])
             except Exception:
-                # Locator can fail on some pages; fall back to body text
                 pass
 
-            # Fallback to scanning the whole body text
             star_text_sources.append(body_text)
 
-            # Parse each candidate text for star percentages/counts
-            counts_found: dict[int, float] = {}
+            details.update(
+                parse_rating_breakdown(
+                    star_text_sources,
+                    total_reviews_for_calc=total_reviews_for_calc,
+                )
+            )
 
-            for text in star_text_sources:
-                normalized = ' '.join(text.split())
-                for star in range(1, 6):
-                    if details[f'rating_{star}_star']:
-                        continue  # Already found for this star
-
-                    if not re.search(rf'{star}\s*stars?', normalized, re.IGNORECASE):
-                        continue
-
-                    percent_match = re.search(r'(\d+(?:\.\d+)?)\s*%', normalized)
-                    if percent_match:
-                        details[f'rating_{star}_star'] = int(round(float(percent_match.group(1))))
-                        continue
-
-                    # Look for counts (e.g., "120 reviews")
-                    count_match = re.search(r'(\d+[\d,]*)\s*(?:reviews?|ratings?)', normalized, re.IGNORECASE)
-                    if count_match:
-                        value = float(count_match.group(1).replace(',', ''))
-                        counts_found[star] = value
-                        continue
-
-                    # As a last resort, use the last numeric value after the star text
-                    cleaned = re.sub(rf'^[^0-9]*{star}\s*stars?\s*', '', normalized, flags=re.IGNORECASE)
-                    number_candidates = [n for n in re.findall(r'\d+(?:\.\d+)?', cleaned) if int(float(n)) != star]
-                    if number_candidates:
-                        value = float(number_candidates[-1])
-                        counts_found[star] = value
-
-            # If we collected counts but not percentages, convert when we know total reviews
-            if counts_found:
-                for star, count_value in counts_found.items():
-                    if details[f'rating_{star}_star']:
-                        continue
-                    if total_reviews_for_calc and total_reviews_for_calc > 0:
-                        percent = int(round((count_value / total_reviews_for_calc) * 100))
-                        details[f'rating_{star}_star'] = percent
-                    else:
-                        # Store the raw count as a best-effort fallback
-                        details[f'rating_{star}_star'] = int(round(count_value))
+            if not any(details[f'rating_{star}_star'] for star in range(1, 6)):
+                print(f"  Rating breakdown missing or collapsed for {product_url[:50]}...")
 
             # Success - break out of retry loop
             break
@@ -473,26 +529,26 @@ async def scrape_discover_page(
 
                     if rating_elem:
                         rating_text = await rating_elem.inner_text()
-                        try:
-                            average_rating = float(rating_text.strip())
-                        except ValueError:
-                            pass
+                        parsed_rating, _ = parse_rating(rating_text)
+                        average_rating = parsed_rating if parsed_rating is not None else average_rating
 
                     if reviews_elem:
                         reviews_text = await reviews_elem.inner_text()
-                        match = re.search(r'\((\d+)\)', reviews_text)
-                        if match:
-                            total_reviews = int(match.group(1))
+                        _, parsed_total_reviews = parse_rating(reviews_text)
+                        total_reviews = parsed_total_reviews or total_reviews
 
                     # Fallback: get rating from footer text
                     if average_rating is None:
                         footer = await card.query_selector('footer')
                         if footer:
                             footer_text = await footer.inner_text()
-                            rating_match = re.search(r'(\d+\.?\d*)\s*\n?\s*\((\d+)\)', footer_text)
-                            if rating_match:
-                                average_rating = float(rating_match.group(1))
-                                total_reviews = int(rating_match.group(2))
+                            rating_guess, total_guess = parse_rating(footer_text)
+                            if rating_guess is not None:
+                                average_rating = rating_guess
+                                total_reviews = total_guess or total_reviews
+
+                    if average_rating is None and total_reviews == 0:
+                        print(f"  No rating metadata found for {product_name[:40]} ({product_url[:50]}...)")
 
                     # Initialize rating breakdown
                     rating_breakdown = {
