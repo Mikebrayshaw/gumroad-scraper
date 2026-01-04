@@ -12,6 +12,7 @@ import random
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Optional
+
 from playwright.async_api import (
     Browser,
     ElementHandle,
@@ -19,6 +20,7 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeout,
     async_playwright,
 )
+from tqdm import tqdm
 
 from categories import CATEGORY_TREE, build_discover_url, category_url_map
 
@@ -393,7 +395,8 @@ async def scrape_discover_page(
     category_url: str,
     max_products: int = 100,
     get_detailed_ratings: bool = True,
-    rate_limit_ms: int = 500
+    rate_limit_ms: int = 500,
+    show_progress: bool = False,
 ) -> list[Product]:
     """
     Scrape products from a Gumroad discover/category page.
@@ -440,11 +443,19 @@ async def scrape_discover_page(
             if query_match:
                 main_category = query_match.group(1)
 
+        progress = tqdm(
+            total=max_products,
+            desc=f"{main_category} products",
+            unit="product",
+            leave=True,
+            disable=not show_progress,
+        )
+
         # Scroll to load more products - aggressive scrolling for better coverage
         scroll_attempts = 0
         max_scroll_attempts = 200  # Increased for large scrapes
         no_new_cards_count = 0
-        last_card_count = 0
+        last_product_count = 0
 
         while len(products) < max_products and scroll_attempts < max_scroll_attempts:
             # Find all product cards using article elements
@@ -630,6 +641,15 @@ async def scrape_discover_page(
                         product_url=product_url,
                     )
                     products.append(product)
+                    progress.update(1)
+                    if show_progress:
+                        progress.set_postfix(
+                            {
+                                "last": product_name[:32],
+                                "detail": "yes" if get_detailed_ratings else "no",
+                            },
+                            refresh=False,
+                        )
                     print(f"[{len(products)}/{max_products}] {product_name[:40]}... | ${price_usd} | Rating: {average_rating or 'N/A'} ({total_reviews} reviews)")
 
                 except Exception as e:
@@ -667,16 +687,13 @@ async def scrape_discover_page(
             except:
                 pass  # Continue even if timeout
 
-            # Check current card count after scroll
-            new_cards = await page.query_selector_all('article')
-            new_card_count = len(new_cards)
-
-            # Check if we're making progress (new cards loaded)
-            if new_card_count > last_card_count:
-                # New cards loaded - reset counter
+            # Check if we're making progress (new unique products scraped)
+            if len(products) > last_product_count:
                 no_new_cards_count = 0
-                last_card_count = new_card_count
-                print(f"  Loaded {new_card_count - current_card_count} new cards (total: {new_card_count})")
+                new_count = len(products)
+                added = new_count - last_product_count
+                last_product_count = new_count
+                print(f"  Added {added} new products (unique total: {len(products)})")
             else:
                 no_new_cards_count += 1
                 # Try more aggressive scrolling when stuck
@@ -689,10 +706,15 @@ async def scrape_discover_page(
 
                 # If stuck for 15 consecutive attempts, give up
                 if no_new_cards_count >= 15:
-                    print(f"No new cards loaded after {no_new_cards_count} scroll attempts. Reached end of results.")
+                    print(
+                        "No new products discovered after "
+                        f"{no_new_cards_count} scroll attempts. Reached end of results."
+                    )
                     break
 
         await browser.close()
+
+        progress.close()
 
     return products
 
@@ -769,6 +791,11 @@ Available categories:
         default=500,
         help='Rate limit in milliseconds between requests (default: 500)'
     )
+    parser.add_argument(
+        '--no-progress',
+        action='store_true',
+        help='Disable the progress bar (useful for CI logs)'
+    )
     return parser.parse_args()
 
 
@@ -782,13 +809,19 @@ async def scrape_category(category: str, args) -> list[Product]:
     print(f"URL: {url}")
     print(f"Target: {args.max_products} products")
     print(f"Detailed scraping: {'No (fast mode)' if args.fast else 'Yes'}")
+    if not args.fast:
+        print(
+            "Note: Visiting each product page with spacing to avoid rate limits; "
+            "use --fast to skip detail pages if you only need card metadata."
+        )
     print("=" * 60 + "\n")
 
     products = await scrape_discover_page(
         category_url=url,
         max_products=args.max_products,
         get_detailed_ratings=not args.fast,
-        rate_limit_ms=args.rate_limit
+        rate_limit_ms=args.rate_limit,
+        show_progress=not args.no_progress,
     )
 
     return products

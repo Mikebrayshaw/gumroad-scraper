@@ -18,7 +18,8 @@ from urllib.parse import parse_qs, urlparse
 from sqlalchemy import Column, DateTime, Float, Integer, String, UniqueConstraint, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-from gumroad_scraper import Product, scrape_discover_page
+from gumroad_scraper import Product
+from platforms import get_scraper
 from supabase_utils import SupabasePersistence
 
 Base = declarative_base()
@@ -217,17 +218,20 @@ async def run_job(
     rate_limit_ms = args.rate_limit or job.get("rate_limit_ms", default_rate_limit_ms)
     get_details = job.get("get_detailed_ratings", True)
     url = job["category_url"]
+    platform = job.get("platform", "gumroad")
+    scraper = get_scraper(platform)
     category_label, subcategory_label = derive_category_labels(url)
     run_id = persistence.start_run(category_label, subcategory_label) if persistence else None
 
     print("=" * 80)
     print(f"Job: {job.get('name', 'unnamed')} | Schedule: {job.get('schedule', 'unspecified')}")
     print(f"URL: {url}")
+    print(f"Platform: {platform}")
     print(f"Target products: {max_products}")
     print(f"Detailed ratings: {'yes' if get_details else 'no'}")
     print("=" * 80)
 
-    products = await scrape_discover_page(
+    products = await scraper(
         category_url=url,
         max_products=max_products,
         get_detailed_ratings=get_details,
