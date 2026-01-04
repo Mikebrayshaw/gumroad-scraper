@@ -1,29 +1,44 @@
 # gumroad-scraper
 
-scrapes product data from gumroad discover pages.
+A Playwright-powered scraper that collects product details from Gumroad discover and category pages. It extracts the product name, creator, price, rating data, sales counts (when available), and an estimated revenue figure and writes the results to CSV.
 
-extracts: product name, creator, price, rating, sales count, estimated revenue
+## Prerequisites
+- Python 3.10+
+- Playwright browsers installed (Chromium is required)
 
-built with python, playwright, beautifulsoup
-
-work in progress.
-
-## Scheduled ingestion runner
-
-Use `ingestion_runner.py` to run daily or real-time scraping jobs defined in
-`ingestion_config.json`. Results are upserted into a SQL database (SQLite by
-default) keyed by product URL and timestamped for change detection.
+Install Python dependencies and the Chromium browser once before running the scraper:
 
 ```bash
-# Install new dependencies
 pip install -r requirements.txt
-
-# Run all configured jobs against a local SQLite file
-python ingestion_runner.py --config ingestion_config.json --database-url sqlite:///gumroad_ingestion.db
-
-# Run only the daily jobs to ship to Postgres
-python ingestion_runner.py --schedule daily --database-url "postgres+psycopg2://user:pass@host/dbname"
-
-# Target specific jobs and override batch size
-python ingestion_runner.py --jobs design-daily,ai-query-realtime --max-products 50
+python -m playwright install chromium
 ```
+
+## Usage
+Run the scraper from the repository root.
+
+### Single category (default: `design`)
+```bash
+python gumroad_scraper.py
+```
+
+### Choose a specific category
+```bash
+python gumroad_scraper.py --category software --max-products 50
+```
+
+### Scrape all categories
+```bash
+python gumroad_scraper.py --all --max-products 25
+```
+
+### Fast mode (skip detailed product pages)
+```bash
+python gumroad_scraper.py --fast
+```
+
+### Custom output filename
+```bash
+python gumroad_scraper.py --output gumroad_design.csv
+```
+
+The scraper saves a CSV with all collected fields and prints a run summary that includes averages, sales totals, and the output path.
