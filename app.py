@@ -34,7 +34,7 @@ from alerts import (
     send_digest,
     SavedSearch,
 )
-from supabase_utils import SupabaseRunStore
+from supabase_utils import SupabaseRunStore, get_supabase_client
 
 
 st.set_page_config(
@@ -122,12 +122,26 @@ if "current_subcategory_slug" not in st.session_state:
 
 
 @st.cache_resource
-def get_run_store() -> SupabaseRunStore:
-    return SupabaseRunStore()
+def get_run_store() -> tuple[SupabaseRunStore, str]:
+    client = get_supabase_client()
+    if client:
+        return SupabaseRunStore(client), "supabase"
+    return SupabaseRunStore(None), "local"
 
 
-def load_run_results(run_id: str, category_slug: str, subcategory_slug: str | None) -> pd.DataFrame:
-    store = get_run_store()
+run_store, storage_mode = get_run_store()
+storage_label = "Supabase" if storage_mode == "supabase" else "Local (no persistence)"
+badge_color = "#16a34a" if storage_mode == "supabase" else "#f97316"
+st.markdown(
+    f"<div style='display:inline-block;padding:6px 10px;border-radius:8px;background:{badge_color};color:white;font-weight:600;'>"
+    f"Storage: {storage_label}</div>",
+    unsafe_allow_html=True,
+)
+if st.session_state.current_run_id:
+    st.caption(f"Current run ID: {st.session_state.current_run_id}")
+
+
+def load_run_results(run_id: str, category_slug: str, subcategory_slug: str | None, store: SupabaseRunStore) -> pd.DataFrame:
     data = store.fetch_snapshots(run_id, category=category_slug, subcategory=subcategory_slug or None)
     if not data:
         return pd.DataFrame()
@@ -177,12 +191,13 @@ def run_scraper(
     fast_mode: bool,
     rate_limit: int,
     run_id: str,
+    storage_mode: str,
 ) -> list[Product]:
     """Run the scraper and return products."""
 
     url = build_discover_url(category_slug, subcategory_slug)
     st.write(
-        f"Scraping with run_id={run_id} | category={category_slug} | subcategory={subcategory_slug or 'all'}"
+        f"Scraping with run_id={run_id} | category={category_slug} | subcategory={subcategory_slug or 'all'} | storage={storage_mode}"
     )
 
     # Run async scraper in sync context
@@ -221,9 +236,10 @@ with tab_scrape:
 
     if scrape_button:
         st.session_state.scraping = True
+        st.session_state.results = None
+        st.session_state.scored_results = None
 
         subcategory_text = f" / {subcategory_label}" if subcategory_slug else ""
-        run_store = get_run_store()
         run_id = run_store.start_run(
             category=category_slug,
             subcategory=subcategory_slug,
@@ -236,9 +252,11 @@ with tab_scrape:
         st.session_state.current_subcategory_slug = subcategory_slug
 
         scrape_url = build_discover_url(category_slug, subcategory_slug)
-        st.info(f"Run ID: {run_id}")
+        st.info(f"Run ID: {run_id} | Storage: {storage_label}")
         st.code(f"Navigating to: {scrape_url}")
-        st.write(f"Selected category: **{category_label}** | Selected subcategory: **{subcategory_label}**")
+        st.write(
+            f"Selected category: **{category_label}** | Selected subcategory: **{subcategory_label}** | Mode: {storage_mode}"
+        )
 
         with st.spinner(
             f"Scraping {category_label}{subcategory_text}... This may take a few minutes."
@@ -251,6 +269,7 @@ with tab_scrape:
                     fast_mode=fast_mode,
                     rate_limit=rate_limit,
                     run_id=str(run_id),
+                    storage_mode=storage_mode,
                 )
                 st.session_state.results = products
 
@@ -284,6 +303,7 @@ with tab_scrape:
                 st.session_state.current_run_id,
                 st.session_state.current_category_slug or category_slug,
                 st.session_state.current_subcategory_slug or subcategory_slug,
+                run_store,
             )
             if not df.empty:
                 st.session_state.scored_results = df.to_dict(orient="records")
