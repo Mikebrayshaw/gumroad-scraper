@@ -108,6 +108,50 @@ class ProductDiff(Base):
     computed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class OpportunityScoreRow(Base):
+    __tablename__ = "opportunity_scores"
+    __table_args__ = (
+        UniqueConstraint("platform", "product_id", "run_id", name="uq_opportunity_scores_run"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)
+    platform = Column(String, nullable=False)
+    product_id = Column(String, nullable=False)
+    title = Column(Text, nullable=False)
+    url = Column(Text, nullable=False)
+    category = Column(Text, nullable=True)
+    creator_name = Column(Text, nullable=True)
+    price_amount = Column(Float, nullable=True)
+    price_currency = Column(String, nullable=True)
+    rating_avg = Column(Float, nullable=True)
+    rating_count = Column(Integer, nullable=True)
+    rating_count_delta = Column(Integer, nullable=True)
+    sales_count = Column(Integer, nullable=True)
+    sales_count_delta = Column(Integer, nullable=True)
+    opportunity_score = Column(Float, nullable=False)
+    velocity_score = Column(Float, nullable=True)
+    novelty_score = Column(Float, nullable=True)
+    copyability_score = Column(Float, nullable=True)
+    price_to_value_score = Column(Float, nullable=True)
+    saturation_penalty = Column(Float, nullable=True)
+    confidence = Column(String, nullable=True)
+    reason_summary = Column(Text, nullable=True)
+    saturation_examples = Column(JSON, nullable=True)
+
+
+class AlertRow(Base):
+    __tablename__ = "alerts"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=False)
+    platform = Column(String, nullable=False)
+    product_id = Column(String, nullable=True)
+    alert_type = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 def configure_logging(run_id: Optional[str] = None) -> logging.Logger:
     logger = logging.getLogger("pipeline")
     _LOG_CONTEXT["run_id"] = run_id or "-"
@@ -278,6 +322,63 @@ class PipelineDatabase:
                 session.add(diff_row)
                 diffs.append(diff_row)
         return diffs
+
+    def get_run(self, run_id: str) -> Optional[Run]:
+        with self.session() as session:
+            return session.query(Run).filter_by(id=run_id).one_or_none()
+
+    def previous_run(self, run_id: str) -> Optional[Run]:
+        current = self.get_run(run_id)
+        if not current or not current.started_at:
+            return None
+        with self.session() as session:
+            return (
+                session.query(Run)
+                .filter(Run.started_at < current.started_at)
+                .order_by(Run.started_at.desc())
+                .first()
+            )
+
+    def get_snapshots(self, run_id: str) -> List[ProductSnapshotRow]:
+        with self.session() as session:
+            return session.query(ProductSnapshotRow).filter_by(run_id=run_id).all()
+
+    def get_diffs(self, run_id: str) -> List[ProductDiff]:
+        with self.session() as session:
+            return session.query(ProductDiff).filter_by(run_id=run_id).all()
+
+    def upsert_opportunity_scores(self, rows: Iterable[dict]) -> None:
+        with self.session() as session:
+            for row in rows:
+                existing = (
+                    session.query(OpportunityScoreRow)
+                    .filter_by(platform=row["platform"], product_id=row["product_id"], run_id=row["run_id"])
+                    .one_or_none()
+                )
+                if existing:
+                    for key, value in row.items():
+                        setattr(existing, key, value)
+                else:
+                    session.add(OpportunityScoreRow(**row))
+
+    def insert_alerts(self, rows: Iterable[dict]) -> None:
+        with self.session() as session:
+            for row in rows:
+                session.add(AlertRow(**row))
+
+    def recent_titles_by_category(self, category: Optional[str], exclude_run_id: Optional[str], limit_runs: int) -> list[str]:
+        with self.session() as session:
+            run_query = session.query(Run.id).order_by(Run.started_at.desc())
+            if limit_runs:
+                run_query = run_query.limit(limit_runs)
+            run_ids = [r[0] for r in run_query.all()]
+
+            query = session.query(ProductSnapshotRow.title).filter(ProductSnapshotRow.run_id.in_(run_ids))
+            if category:
+                query = query.filter_by(category=category)
+            if exclude_run_id:
+                query = query.filter(ProductSnapshotRow.run_id != exclude_run_id)
+            return [row[0] for row in query.all()]
 
     def export_run(self, run_id: str) -> dict:
         with self.session() as session:

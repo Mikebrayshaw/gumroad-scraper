@@ -14,6 +14,14 @@ from categories import category_url_map
 from gumroad_scraper import Product as RawGumroadProduct
 from gumroad_scraper import scrape_discover_page
 from models import ProductSnapshot, estimate_revenue
+from opportunity_engine import (
+    detect_alerts,
+    generate_opportunities,
+    hours_between_runs,
+    load_config,
+    render_alerts_markdown,
+    render_opportunity_briefs,
+)
 from pipeline import PipelineDatabase, configure_logging, load_snapshots_from_json, snapshots_to_json
 from supabase_utils import extract_platform_product_id
 
@@ -102,6 +110,101 @@ def cmd_diff(args: argparse.Namespace) -> None:
     print(f"Computed {len(diffs)} diffs for run {args.run_id}")
 
 
+def _snapshot_to_dict(rows: Iterable) -> List[dict]:
+    return [
+        {
+            "platform": row.platform,
+            "product_id": row.product_id,
+            "run_id": row.run_id,
+            "url": row.url,
+            "title": row.title,
+            "creator_name": row.creator_name,
+            "category": row.category,
+            "price_amount": row.price_amount,
+            "price_currency": row.price_currency,
+            "rating_avg": row.rating_avg,
+            "rating_count": row.rating_count,
+            "sales_count": row.sales_count,
+        }
+        for row in rows
+    ]
+
+
+def _diffs_to_map(rows: Iterable) -> dict:
+    mapping = {}
+    for row in rows:
+        mapping[(row.platform, row.product_id)] = {
+            "rating_count_delta": row.rating_count_delta,
+            "sales_count_delta": row.sales_count_delta,
+            "price_delta": row.price_delta,
+            "previous_run_id": row.previous_run_id,
+        }
+    return mapping
+
+
+def _write_outputs(output_dir: Path, run_id: str, opportunities: List[dict], alerts: List[dict], top_k: int) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    import csv
+
+    csv_path = output_dir / "opportunities.csv"
+    json_path = output_dir / "opportunities.json"
+    brief_path = output_dir / "opportunity_briefs.md"
+    alerts_path = output_dir / "alerts.md"
+
+    fieldnames = sorted({k for row in opportunities for k in row.keys() if k != "saturation_examples"})
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows([{k: v for k, v in row.items() if k in fieldnames} for row in opportunities])
+
+    json_path.write_text(json.dumps(opportunities, indent=2), encoding="utf-8")
+    brief_path.write_text(render_opportunity_briefs(opportunities, top_k=top_k), encoding="utf-8")
+    alerts_path.write_text(render_alerts_markdown(alerts, run_id), encoding="utf-8")
+
+
+def cmd_generate_outputs(args: argparse.Namespace) -> None:
+    logger = configure_logging(args.run_id)
+    db = PipelineDatabase()
+    config = load_config(args.config)
+
+    snapshots_rows = db.get_snapshots(args.run_id)
+    if not snapshots_rows:
+        raise ValueError(f"Run {args.run_id} has no snapshots")
+
+    diffs_rows = db.get_diffs(args.run_id)
+    if not diffs_rows:
+        logger.info("No diffs found, computing them now", extra={"run_id": args.run_id})
+        diffs_rows = db.compute_diffs(args.run_id)
+
+    current_run = db.get_run(args.run_id)
+    previous_run = db.previous_run(args.run_id)
+    hours_delta = hours_between_runs(
+        current_run.started_at.isoformat() if current_run and current_run.started_at else None,
+        previous_run.started_at.isoformat() if previous_run and previous_run.started_at else None,
+    )
+
+    snapshots = _snapshot_to_dict(snapshots_rows)
+    diffs_map = _diffs_to_map(diffs_rows)
+
+    categories = {row.category for row in snapshots}
+    historical_titles = {
+        cat: db.recent_titles_by_category(cat, exclude_run_id=args.run_id, limit_runs=config["novelty"].get("history_runs", 3))
+        for cat in categories
+    }
+
+    opportunities = generate_opportunities(snapshots, diffs_map, historical_titles, hours_delta, config)
+    db.upsert_opportunity_scores(opportunities)
+
+    alerts = detect_alerts(args.run_id, snapshots, diffs_map, previous_run.id if previous_run else None, config)
+    if alerts:
+        db.insert_alerts(alerts)
+
+    output_dir = Path(args.output_dir or f"data/opportunities/{args.run_id}")
+    _write_outputs(output_dir, args.run_id, opportunities, alerts, args.top_k)
+    logger.info("Generated opportunities", extra={"run_id": args.run_id})
+    print(f"Wrote opportunities and alerts to {output_dir}")
+
+
 def _export_csv(rows: Iterable[dict], out_path: Path) -> None:
     import csv
 
@@ -154,6 +257,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--format", choices=["csv", "json"], default="json")
     p_export.add_argument("--out", required=True, type=str)
     p_export.set_defaults(func=cmd_export)
+
+    p_generate = sub.add_parser("generate_outputs", help="Create opportunity scores, briefs, and alerts for a run")
+    p_generate.add_argument("--run-id", required=True, type=str)
+    p_generate.add_argument("--top-k", type=int, default=10)
+    p_generate.add_argument("--config", type=str, help="Path to opportunity config JSON")
+    p_generate.add_argument("--output-dir", type=str, help="Directory for output files")
+    p_generate.set_defaults(func=cmd_generate_outputs)
 
     return parser
 
