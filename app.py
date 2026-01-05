@@ -220,6 +220,33 @@ def run_scraper(
     return products
 
 
+def to_dataframe(products: list[Product], scored: list[dict]) -> pd.DataFrame:
+    """Combine scraped products and scores into a dataframe for display."""
+
+    if not products or not scored:
+        return pd.DataFrame()
+
+    rows = []
+    for product, score in zip(products, scored):
+        payload = asdict(product)
+        payload.update(score)
+        rows.append(payload)
+
+    df = pd.DataFrame(rows)
+    for numeric_col in [
+        "price_usd",
+        "average_rating",
+        "total_reviews",
+        "sales_count",
+        "estimated_revenue",
+        "opportunity_score",
+    ]:
+        if numeric_col in df:
+            df[numeric_col] = pd.to_numeric(df[numeric_col], errors="coerce")
+
+    return df
+
+
 # Create tabs for different features
 tab_scrape, tab_saved, tab_watchlist = st.tabs(["Scrape", "Saved Searches", "Watchlist"])
 
@@ -295,9 +322,10 @@ with tab_scrape:
 
         st.session_state.scraping = False
 
-    # Load results for current run (DB-backed to avoid stale data)
-    df = pd.DataFrame()
-    if st.session_state.current_run_id:
+    # Prefer freshly scraped results in memory; fall back to persisted snapshots
+    df = to_dataframe(st.session_state.results or [], st.session_state.scored_results or [])
+
+    if df.empty and st.session_state.current_run_id:
         try:
             df = load_run_results(
                 st.session_state.current_run_id,
