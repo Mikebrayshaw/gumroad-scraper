@@ -56,11 +56,16 @@ create table if not exists runs (
     id uuid primary key default gen_random_uuid(),
     platform text not null,
     category text,
+    subcategory text,
     source text,
     config jsonb,
     started_at timestamptz not null default now(),
     completed_at timestamptz,
     total_products integer,
+    total_new integer,
+    total_updated integer,
+    status text default 'running',
+    error text,
     summary jsonb
 );
 
@@ -74,6 +79,7 @@ create table if not exists product_snapshots (
     creator_name text,
     creator_url text,
     category text,
+    subcategory text,
     price_amount numeric,
     price_currency text,
     price_is_pwyw boolean default false,
@@ -82,6 +88,7 @@ create table if not exists product_snapshots (
     sales_count integer,
     revenue_estimate numeric,
     revenue_confidence text,
+    opportunity_score numeric,
     tags jsonb,
     scraped_at timestamptz not null,
     raw_source_hash text not null,

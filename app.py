@@ -34,6 +34,7 @@ from alerts import (
     send_digest,
     SavedSearch,
 )
+from supabase_utils import SupabaseRunStore
 
 
 st.set_page_config(
@@ -112,6 +113,61 @@ if "scraping" not in st.session_state:
     st.session_state.scraping = False
 if "detected_changes" not in st.session_state:
     st.session_state.detected_changes = None
+if "current_run_id" not in st.session_state:
+    st.session_state.current_run_id = None
+if "current_category_slug" not in st.session_state:
+    st.session_state.current_category_slug = None
+if "current_subcategory_slug" not in st.session_state:
+    st.session_state.current_subcategory_slug = None
+
+
+@st.cache_resource
+def get_run_store() -> SupabaseRunStore:
+    return SupabaseRunStore()
+
+
+def load_run_results(run_id: str, category_slug: str, subcategory_slug: str | None) -> pd.DataFrame:
+    store = get_run_store()
+    data = store.fetch_snapshots(run_id, category=category_slug, subcategory=subcategory_slug or None)
+    if not data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data)
+    df = df.rename(
+        columns={
+            "title": "product_name",
+            "url": "product_url",
+            "price_amount": "price_usd",
+            "rating_avg": "average_rating",
+            "rating_count": "total_reviews",
+            "revenue_estimate": "estimated_revenue",
+        }
+    )
+    for required in [
+        "product_name",
+        "product_url",
+        "creator_name",
+        "category",
+        "subcategory",
+        "price_usd",
+        "average_rating",
+        "total_reviews",
+        "sales_count",
+        "estimated_revenue",
+        "opportunity_score",
+    ]:
+        if required not in df:
+            df[required] = None
+    for numeric_col in [
+        "price_usd",
+        "average_rating",
+        "total_reviews",
+        "sales_count",
+        "estimated_revenue",
+        "opportunity_score",
+    ]:
+        df[numeric_col] = pd.to_numeric(df[numeric_col], errors="coerce") if numeric_col in df else None
+    return df
 
 
 def run_scraper(
@@ -120,10 +176,14 @@ def run_scraper(
     max_products: int,
     fast_mode: bool,
     rate_limit: int,
+    run_id: str,
 ) -> list[Product]:
     """Run the scraper and return products."""
 
     url = build_discover_url(category_slug, subcategory_slug)
+    st.write(
+        f"Scraping with run_id={run_id} | category={category_slug} | subcategory={subcategory_slug or 'all'}"
+    )
 
     # Run async scraper in sync context
     loop = asyncio.new_event_loop()
@@ -132,6 +192,8 @@ def run_scraper(
         products = loop.run_until_complete(
             scrape_discover_page(
                 category_url=url,
+                category_slug=category_slug,
+                subcategory_slug=subcategory_slug,
                 max_products=max_products,
                 get_detailed_ratings=not fast_mode,
                 rate_limit_ms=rate_limit,
@@ -161,6 +223,22 @@ with tab_scrape:
         st.session_state.scraping = True
 
         subcategory_text = f" / {subcategory_label}" if subcategory_slug else ""
+        run_store = get_run_store()
+        run_id = run_store.start_run(
+            category=category_slug,
+            subcategory=subcategory_slug,
+            max_products=max_products,
+            fast_mode=fast_mode,
+            rate_limit_ms=rate_limit,
+        )
+        st.session_state.current_run_id = str(run_id)
+        st.session_state.current_category_slug = category_slug
+        st.session_state.current_subcategory_slug = subcategory_slug
+
+        scrape_url = build_discover_url(category_slug, subcategory_slug)
+        st.info(f"Run ID: {run_id}")
+        st.code(f"Navigating to: {scrape_url}")
+        st.write(f"Selected category: **{category_label}** | Selected subcategory: **{subcategory_label}**")
 
         with st.spinner(
             f"Scraping {category_label}{subcategory_text}... This may take a few minutes."
@@ -172,6 +250,7 @@ with tab_scrape:
                     max_products=max_products,
                     fast_mode=fast_mode,
                     rate_limit=rate_limit,
+                    run_id=str(run_id),
                 )
                 st.session_state.results = products
 
@@ -180,20 +259,40 @@ with tab_scrape:
                 scored_products = [score_product_dict(p) for p in product_dicts]
                 st.session_state.scored_results = scored_products
 
+                totals = run_store.record_snapshots(run_id, products, scored_products)
+                run_store.complete_run(run_id, totals={"total": len(products), **totals})
+
+                first_urls = [p.product_url for p in products[:3]]
+                if first_urls:
+                    st.write("First scraped product URLs:")
+                    st.code("\n".join(first_urls))
+
                 st.success(f"Scraped {len(products)} products!")
             except Exception as e:
                 st.error(f"Error: {e}")
+                run_store.complete_run(run_id, status="failed", error=str(e))
                 st.session_state.results = None
                 st.session_state.scored_results = None
 
         st.session_state.scraping = False
 
-    # Display results
-    if st.session_state.scored_results:
-        scored_products = st.session_state.scored_results
+    # Load results for current run (DB-backed to avoid stale data)
+    df = pd.DataFrame()
+    if st.session_state.current_run_id:
+        try:
+            df = load_run_results(
+                st.session_state.current_run_id,
+                st.session_state.current_category_slug or category_slug,
+                st.session_state.current_subcategory_slug or subcategory_slug,
+            )
+            if not df.empty:
+                st.session_state.scored_results = df.to_dict(orient="records")
+        except Exception as exc:
+            st.error(f"Unable to load results for run {st.session_state.current_run_id}: {exc}")
 
-        # Convert to DataFrame
-        df = pd.DataFrame(scored_products)
+    # Display results
+    if not df.empty:
+        scored_products = df.to_dict(orient="records")
 
         # Summary metrics
         st.markdown("---")
@@ -361,6 +460,7 @@ with tab_saved:
                                 max_products=100,
                                 fast_mode=False,
                                 rate_limit=500,
+                                run_id=f"saved-search-{search.id}",
                             )
                             product_dicts = [asdict(p) for p in products]
                             scored_products = [score_product_dict(p) for p in product_dicts]

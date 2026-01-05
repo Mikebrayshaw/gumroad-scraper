@@ -1,6 +1,7 @@
 """Streamlit view for browsing historical Gumroad scrape data stored in Supabase."""
 
 import pandas as pd
+import pandas as pd
 import streamlit as st
 
 from analysis_ui import render_analysis_block
@@ -20,8 +21,8 @@ def supabase_client():
 def load_runs(limit: int = 200):
     client = supabase_client()
     response = (
-        client.table("scrape_runs")
-        .select("id, category, subcategory, started_at, completed_at, total_products, total_new, total_updated")
+        client.table("runs")
+        .select("id, category, subcategory, started_at, completed_at, total_products, total_new, total_updated, status")
         .order("started_at", desc=True)
         .limit(limit)
         .execute()
@@ -33,13 +34,12 @@ def load_runs(limit: int = 200):
 def load_products(run_id: str, limit: int = 500):
     client = supabase_client()
     response = (
-        client.table("products")
+        client.table("product_snapshots")
         .select(
-            "product_name, creator_name, category, subcategory, price_usd, average_rating, "
-            "total_reviews, sales_count, estimated_revenue, product_url, last_seen_at"
+            "title, creator_name, category, subcategory, price_amount, price_currency, rating_avg, rating_count, sales_count, revenue_estimate, url, opportunity_score, scraped_at"
         )
-        .eq("last_run_id", run_id)
-        .order("last_seen_at", desc=True)
+        .eq("run_id", run_id)
+        .order("opportunity_score", desc=True)
         .limit(limit)
         .execute()
     )
@@ -74,6 +74,16 @@ st.markdown(
 )
 
 products_df = load_products(selected_run, limit=max_products)
+products_df = products_df.rename(
+    columns={
+        "title": "product_name",
+        "url": "product_url",
+        "price_amount": "price_usd",
+        "rating_avg": "average_rating",
+        "rating_count": "total_reviews",
+        "revenue_estimate": "estimated_revenue",
+    }
+)
 
 if products_df.empty:
     st.warning("No products recorded for this run yet.")

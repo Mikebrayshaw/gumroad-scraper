@@ -393,6 +393,8 @@ async def get_product_details(
 
 async def scrape_discover_page(
     category_url: str,
+    category_slug: str | None = None,
+    subcategory_slug: str | None = None,
     max_products: int = 100,
     get_detailed_ratings: bool = True,
     rate_limit_ms: int = 500,
@@ -436,12 +438,14 @@ async def scrape_discover_page(
 
         # Extract category from URL
         category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
-        main_category = category_match.group(1) if category_match else 'discover'
+        main_category = category_slug or (category_match.group(1) if category_match else 'discover')
         if main_category == 'discover':
             # Check for query param
             query_match = re.search(r'query=([^&]+)', category_url)
             if query_match:
                 main_category = query_match.group(1)
+
+        selected_subcategory = subcategory_slug or main_category
 
         progress = tqdm(
             total=max_products,
@@ -624,7 +628,7 @@ async def scrape_discover_page(
                         product_name=product_name,
                         creator_name=creator_name,
                         category=main_category,
-                        subcategory=main_category,  # Same as category for now
+                        subcategory=selected_subcategory,
                         price_usd=price_usd,
                         original_price=original_price,
                         currency=currency,
