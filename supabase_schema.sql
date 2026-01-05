@@ -102,3 +102,42 @@ create table if not exists product_diffs (
     computed_at timestamptz not null default now(),
     unique(platform, product_id, run_id)
 );
+
+create table if not exists opportunity_scores (
+    id bigint generated always as identity primary key,
+    run_id uuid not null references runs(id),
+    platform text not null,
+    product_id text not null,
+    title text not null,
+    url text not null,
+    category text,
+    creator_name text,
+    price_amount numeric,
+    price_currency text,
+    rating_avg numeric,
+    rating_count integer,
+    rating_count_delta integer,
+    sales_count integer,
+    sales_count_delta integer,
+    opportunity_score numeric not null,
+    velocity_score numeric,
+    novelty_score numeric,
+    copyability_score numeric,
+    price_to_value_score numeric,
+    saturation_penalty numeric,
+    confidence text,
+    reason_summary text,
+    saturation_examples jsonb,
+    unique(platform, product_id, run_id)
+);
+
+create table if not exists alerts (
+    id bigint generated always as identity primary key,
+    run_id uuid not null references runs(id),
+    platform text not null,
+    product_id text,
+    alert_type text not null,
+    message text not null,
+    metadata jsonb,
+    created_at timestamptz not null default now()
+);

@@ -1,0 +1,47 @@
+{
+  "weights": {
+    "velocity": 0.35,
+    "copyability": 0.2,
+    "novelty": 0.15,
+    "price_to_value": 0.2,
+    "saturation_penalty": 0.1
+  },
+  "velocity": {
+    "rating_per_hour_for_max": 5,
+    "sales_per_hour_for_max": 20,
+    "spike_rating_delta": 12,
+    "spike_sales_delta": 50,
+    "min_hours": 6
+  },
+  "price_to_value": {
+    "sweet_spot": [15, 79],
+    "acceptable": [5, 149],
+    "penalty_high": 40,
+    "penalty_low": 20
+  },
+  "novelty": {
+    "history_runs": 3,
+    "min_token_length": 4
+  },
+  "copyability": {
+    "format_keywords": ["template", "checklist", "playbook", "framework", "prompts", "swipe", "spreadsheet", "notion"],
+    "audience_markers": ["for", "to"],
+    "brand_blocks": [" by ", "with "],
+    "creator_penalty": 20
+  },
+  "saturation": {
+    "similarity_threshold": 0.55,
+    "penalty_per_neighbor": 12,
+    "max_penalty": 60
+  },
+  "confidence": {
+    "reviews_high": 25,
+    "reviews_med": 5,
+    "sales_high": 150,
+    "sales_med": 25
+  },
+  "alerts": {
+    "price_pct_move": 0.25,
+    "min_price_change": 5
+  }
+}
