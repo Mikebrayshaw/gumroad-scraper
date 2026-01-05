@@ -1,6 +1,6 @@
 # gumroad-scraper
 
-A Playwright-powered scraper that collects product details from Gumroad discover and category pages. It extracts the product name, creator, price, rating data, sales counts (when available), and an estimated revenue figure and writes the results to CSV.
+A Playwright-powered scraper that collects product details from Gumroad discover and category pages. It extracts the product name, creator, price, rating data, sales counts (when available), and an estimated revenue figure and writes the results to CSV. The repository also includes a production-minded pipeline for registering scrape runs, normalizing products into a canonical schema, storing per-run snapshots, computing diffs, and exporting results.
 
 ## Prerequisites
 - Python 3.10+
@@ -43,10 +43,57 @@ python gumroad_scraper.py --no-progress  # disable if your log sink dislikes TTY
 
 ### Custom output filename
 ```bash
-python gumroad_scraper.py --output gumroad_design.csv
+  python gumroad_scraper.py --output gumroad_design.csv
 ```
 
 The scraper saves a CSV with all collected fields and prints a run summary that includes averages, sales totals, and the output path. Detailed runs open each product page (with a delay between requests) to capture ratings and sales data, which is the slowest part of a full scrape—use `--fast` when you only need card metadata.
+
+## Pipeline overview (runs, snapshots, diffs)
+The pipeline makes every scrape a first-class run and preserves facts for change tracking:
+
+- **Runs**: each scrape is a run with `run_id`, timestamps, input config (category, max products, fast/slow), and summary totals.
+- **Products**: stable identity table keyed by `platform` + `product_id` (the Gumroad slug). Identity fields include URL, title, creator, and category.
+- **Product snapshots**: each run records the canonical facts for every product (`price_amount`, `price_currency`, `price_is_pwyw`, ratings, sales, `revenue_estimate`, `revenue_confidence`, `scraped_at`, `raw_source_hash`). Snapshots are keyed by `(platform, product_id, run_id)`.
+- **Product diffs**: after ingest, the system compares the newest snapshot to the previous one for the same product and stores deltas (`price_delta`, `rating_count_delta`, `sales_count_delta`, `revenue_delta`, `raw_source_changed`).
+
+Revenue estimation is intentionally conservative: `price * sales_count` when both are present, otherwise `None` with `low` confidence. Pay-what-you-want pricing or unknown currency downgrades confidence. See inline comments in `models.py` for the assumptions.
+
+### Canonical Product model
+The canonical schema (see `models.ProductSnapshot`) includes:
+
+- platform (e.g., `gumroad`), product_id, url, title
+- creator_name, creator_url (nullable), category
+- price_amount, price_currency, price_is_pwyw (bool)
+- rating_avg, rating_count, sales_count (nullable)
+- revenue_estimate (nullable), revenue_confidence (`low`/`med`/`high`)
+- tags/keywords (optional list)
+- scraped_at (timestamp), raw_source_hash (sha256 of the serialized facts)
+
+## Pipeline CLI
+The CLI walks a scrape through the full lifecycle: scrape → ingest → diff → export. All commands live in `pipeline_cli.py`.
+
+```bash
+# Scrape a Gumroad category and save canonical snapshots
+python pipeline_cli.py scrape --category design --max-products 25 --fast --out data/runs/latest.json
+
+# Ingest a saved run into the local pipeline database (or DATABASE_URL)
+python pipeline_cli.py ingest data/runs/latest.json
+
+# Compute diffs against the previous snapshots for each product
+python pipeline_cli.py diff --run-id <run_id_from_scrape>
+
+# Export the run as JSON or CSV (snapshots)
+python pipeline_cli.py export --run-id <run_id> --format json --out exports/run.json
+python pipeline_cli.py export --run-id <run_id> --format csv --out exports/run.csv
+```
+
+- `DATABASE_URL` controls persistence (defaults to `sqlite:///data/gumroad_pipeline.db` for local dev).
+- Structured logs include the `run_id` for traceability.
+
+## Local dev vs production
+- **Local**: default SQLite database at `data/gumroad_pipeline.db`, browserless tests can use `--fast` to avoid product-page fetches.
+- **Production (Supabase/Railway)**: set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`, and `DATABASE_URL` in Railway or the environment. Run the migrations in `supabase_schema.sql` to provision `runs`, `product_snapshots`, and `product_diffs` in addition to the existing tables. The ingestion runner (`ingestion_runner.py`) and Streamlit apps continue to work with the same env vars.
+- Logging remains structured; retries/backoff are implemented in `gumroad_scraper.py` when fetching product detail pages. Debug artifacts (HTML/screenshot) can be saved by extending the Playwright selectors when they fail.
 
 ## Supabase persistence & Railway deployment
 1. Create a Supabase project and run `supabase_schema.sql` in the SQL editor to provision the `platforms`, `scrape_runs`, and `products` tables (with indexes on product IDs and timestamps).
