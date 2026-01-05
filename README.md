@@ -95,6 +95,11 @@ python pipeline_cli.py export --run-id <run_id> --format csv --out exports/run.c
 - **Production (Supabase/Railway)**: set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_ANON_KEY`, and `DATABASE_URL` in Railway or the environment. Run the migrations in `supabase_schema.sql` to provision `runs`, `product_snapshots`, and `product_diffs` in addition to the existing tables. The ingestion runner (`ingestion_runner.py`) and Streamlit apps continue to work with the same env vars.
 - Logging remains structured; retries/backoff are implemented in `gumroad_scraper.py` when fetching product detail pages. Debug artifacts (HTML/screenshot) can be saved by extending the Playwright selectors when they fail.
 
+## Why results are run-scoped
+- Every Streamlit scrape issues a new `run_id` (UUID) and writes run metadata (category, subcategory, rate limits, etc.) to the `runs` table.
+- Products for that scrape are stored in `product_snapshots` keyed by `(run_id, platform, product_id)`. UI tables filter by the active `run_id` and category/subcategory so stale/global results never bleed across runs.
+- The scrape view logs the selected category, the exact discover URL, the `run_id`, and the first few scraped product URLs to make debugging mismatches easy. After a page refresh the last `run_id` is re-used to reload the same snapshots from the database.
+
 ## Supabase persistence & Railway deployment
 1. Create a Supabase project and run `supabase_schema.sql` in the SQL editor to provision the `platforms`, `scrape_runs`, and `products` tables (with indexes on product IDs and timestamps).
 2. Copy `.env.example` to `.env` and fill in `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` locally. Railway uses the same variable names—add them in the Railway dashboard so deployments can reach Supabase.
