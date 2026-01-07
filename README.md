@@ -26,6 +26,11 @@ python gumroad_scraper.py
 python gumroad_scraper.py --category software --max-products 50
 ```
 
+### Choose a subcategory within a category
+```bash
+python gumroad_scraper.py --category design --subcategory icons --max-products 50
+```
+
 ### Scrape all categories
 ```bash
 python gumroad_scraper.py --all --max-products 25

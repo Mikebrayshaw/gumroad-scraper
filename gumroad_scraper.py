@@ -22,7 +22,7 @@ from playwright.async_api import (
 )
 from tqdm import tqdm
 
-from categories import CATEGORY_TREE, build_discover_url, category_url_map
+from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, category_url_map
 
 
 @dataclass
@@ -746,14 +746,36 @@ CATEGORY_URLS = category_url_map()
 
 def parse_args():
     """Parse command line arguments."""
+    base_parser = argparse.ArgumentParser(add_help=False)
+    base_parser.add_argument(
+        '-c', '--category',
+        type=str,
+        default='design',
+        choices=list(CATEGORY_URLS.keys()),
+        help='Category to scrape (default: design)'
+    )
+    base_parser.add_argument(
+        '--all',
+        action='store_true',
+        help='Scrape all categories'
+    )
+
+    base_args, _ = base_parser.parse_known_args()
+    subcategory_choices = []
+    category_meta = CATEGORY_BY_SLUG.get(base_args.category)
+    if category_meta:
+        subcategory_choices = [sub.slug for sub in category_meta.subcategories if sub.slug]
+
     parser = argparse.ArgumentParser(
         description='Scrape product data from Gumroad discover pages.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[base_parser],
         epilog=f"""
 Examples:
   python gumroad_scraper.py                     # Scrape 'design' category (default)
   python gumroad_scraper.py -c software         # Scrape 'software' category
   python gumroad_scraper.py -c 3d -n 50         # Scrape 50 products from '3d' category
+  python gumroad_scraper.py -c design --subcategory icons  # Scrape a category subcategory
   python gumroad_scraper.py --all -n 25         # Scrape 25 products from ALL categories
   python gumroad_scraper.py -c design --fast    # Fast mode (no detailed product pages)
 
@@ -762,22 +784,16 @@ Available categories:
         """
     )
     parser.add_argument(
-        '-c', '--category',
-        type=str,
-        default='design',
-        choices=list(CATEGORY_URLS.keys()),
-        help='Category to scrape (default: design)'
-    )
-    parser.add_argument(
         '-n', '--max-products',
         type=int,
         default=100,
         help='Maximum number of products to scrape per category (default: 100)'
     )
     parser.add_argument(
-        '--all',
-        action='store_true',
-        help='Scrape all categories'
+        '--subcategory',
+        type=str,
+        choices=subcategory_choices if subcategory_choices else None,
+        help='Optional subcategory slug for the selected category'
     )
     parser.add_argument(
         '--fast',
@@ -800,12 +816,27 @@ Available categories:
         action='store_true',
         help='Disable the progress bar (useful for CI logs)'
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.all and args.subcategory:
+        parser.error('--subcategory cannot be used with --all')
+
+    if args.subcategory:
+        category_meta = CATEGORY_BY_SLUG.get(args.category)
+        if not category_meta:
+            parser.error(f"Subcategories are not available for category '{args.category}'.")
+        allowed_subcategories = {sub.slug for sub in category_meta.subcategories if sub.slug}
+        if args.subcategory not in allowed_subcategories:
+            parser.error(
+                f"Invalid subcategory '{args.subcategory}' for category '{args.category}'. "
+                f"Valid options: {', '.join(sorted(allowed_subcategories))}"
+            )
+
+    return args
 
 
 async def scrape_category(category: str, args) -> list[Product]:
     """Scrape a single category and return products."""
-    url = CATEGORY_URLS.get(category, 'https://gumroad.com/discover')
+    url = build_discover_url(category, args.subcategory)
 
     print("=" * 60)
     print(f"SCRAPING: {category.upper()}")
