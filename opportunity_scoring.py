@@ -6,7 +6,8 @@ like rating, reviews, price, and sales velocity.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Optional
 
 
 @dataclass
@@ -19,6 +20,18 @@ class ScoredProduct:
     price_signal: float  # 0-1, favoring $10-$79 range
     sales_velocity_signal: float  # 0-1, based on sales count
     revenue_signal: float  # 0-1, based on estimated revenue
+
+
+@dataclass
+class TrendScore:
+    """Trending score and velocity metrics for a product."""
+    trend_score: float  # 0-100 scale
+    score_notes: str
+    sales_count_delta: int
+    revenue_delta: float
+    rating_count_delta: int
+    last_week_sales_delta: int
+    previous_week_sales_delta: int
 
 
 # Scoring weights - adjust to tune the algorithm
@@ -363,3 +376,151 @@ def get_score_breakdown(scored_product: dict) -> str:
         f"  {scored_product.get('score_notes', 'N/A')}",
     ]
     return "\n".join(lines)
+
+
+def _coerce_datetime(value: datetime | str) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _latest_snapshot_before(
+    snapshots: Iterable[dict],
+    cutoff: datetime,
+) -> Optional[dict]:
+    return max(
+        (snap for snap in snapshots if _coerce_datetime(snap["scraped_at"]) <= cutoff),
+        key=lambda snap: _coerce_datetime(snap["scraped_at"]),
+        default=None,
+    )
+
+
+def _scaled_signal(value: float, max_value: float) -> float:
+    if max_value <= 0:
+        return 0.0
+    return min(max(value / max_value, 0.0), 1.0)
+
+
+def score_trend_from_snapshots(
+    snapshots: list[dict],
+    *,
+    now: Optional[datetime] = None,
+    min_rating: float = 4.0,
+    min_sales: int = 10,
+) -> TrendScore:
+    """
+    Score product trend based on snapshot velocity and recent growth.
+
+    snapshots must include: sales_count, revenue_estimate, rating_count,
+    rating_avg, scraped_at.
+    """
+    if not snapshots:
+        return TrendScore(
+            trend_score=0.0,
+            score_notes="no snapshots",
+            sales_count_delta=0,
+            revenue_delta=0.0,
+            rating_count_delta=0,
+            last_week_sales_delta=0,
+            previous_week_sales_delta=0,
+        )
+
+    sorted_snaps = sorted(
+        snapshots,
+        key=lambda snap: _coerce_datetime(snap["scraped_at"]),
+    )
+    latest = sorted_snaps[-1]
+    current_sales = latest.get("sales_count") or 0
+    current_rating_avg = latest.get("rating_avg")
+
+    if current_rating_avg is None or current_rating_avg < min_rating:
+        return TrendScore(
+            trend_score=0.0,
+            score_notes=f"filtered: rating < {min_rating}",
+            sales_count_delta=0,
+            revenue_delta=0.0,
+            rating_count_delta=0,
+            last_week_sales_delta=0,
+            previous_week_sales_delta=0,
+        )
+    if current_sales < min_sales:
+        return TrendScore(
+            trend_score=0.0,
+            score_notes=f"filtered: sales < {min_sales}",
+            sales_count_delta=0,
+            revenue_delta=0.0,
+            rating_count_delta=0,
+            last_week_sales_delta=0,
+            previous_week_sales_delta=0,
+        )
+
+    end_time = now or _coerce_datetime(latest["scraped_at"])
+    last_week_start = end_time - timedelta(days=7)
+    prev_week_start = end_time - timedelta(days=14)
+
+    last_week_start_snap = _latest_snapshot_before(sorted_snaps, last_week_start)
+    prev_week_start_snap = _latest_snapshot_before(sorted_snaps, prev_week_start)
+
+    def _delta(metric: str, newer: dict, older: Optional[dict]) -> float:
+        newer_value = newer.get(metric) or 0
+        older_value = (older or {}).get(metric) or 0
+        return newer_value - older_value
+
+    sales_count_delta = int(_delta("sales_count", latest, last_week_start_snap))
+    revenue_delta = float(_delta("revenue_estimate", latest, last_week_start_snap))
+    rating_count_delta = int(_delta("rating_count", latest, last_week_start_snap))
+
+    previous_week_sales_delta = int(
+        _delta("sales_count", last_week_start_snap or latest, prev_week_start_snap)
+    )
+
+    sales_signal = _scaled_signal(sales_count_delta, 100)
+    revenue_signal = _scaled_signal(revenue_delta, 2000)
+    rating_signal = _scaled_signal(rating_count_delta, 25)
+
+    base_score = (
+        sales_signal * 0.5 +
+        revenue_signal * 0.3 +
+        rating_signal * 0.2
+    ) * 100
+
+    growth_boost = 1.0
+    if sales_count_delta > previous_week_sales_delta:
+        growth_boost += 0.15
+    if rating_count_delta > 0 and rating_count_delta > previous_week_sales_delta:
+        growth_boost += 0.05
+
+    thresholds = [10, 50, 100, 250, 500, 1000]
+    previous_sales = (last_week_start_snap or {}).get("sales_count") or 0
+    threshold_bonus = 0
+    crossed = [
+        t for t in thresholds
+        if previous_sales < t <= current_sales
+    ]
+    if crossed:
+        threshold_bonus = min(10, len(crossed) * 3)
+
+    trend_score = min((base_score * growth_boost) + threshold_bonus, 100)
+
+    notes = [
+        f"sales delta 7d: {sales_count_delta}",
+        f"revenue delta 7d: {revenue_delta:.2f}",
+        f"rating delta 7d: {rating_count_delta}",
+    ]
+    if sales_count_delta > previous_week_sales_delta:
+        notes.append("recent growth > prior week")
+    if crossed:
+        notes.append(f"crossed threshold: {', '.join(str(t) for t in crossed)}")
+
+    return TrendScore(
+        trend_score=round(trend_score, 1),
+        score_notes="; ".join(notes),
+        sales_count_delta=sales_count_delta,
+        revenue_delta=round(revenue_delta, 2),
+        rating_count_delta=rating_count_delta,
+        last_week_sales_delta=sales_count_delta,
+        previous_week_sales_delta=previous_week_sales_delta,
+    )
