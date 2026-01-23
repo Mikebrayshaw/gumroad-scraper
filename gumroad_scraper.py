@@ -37,12 +37,12 @@ class Product:
     currency: str
     average_rating: Optional[float]
     total_reviews: int
-    rating_1_star: int
-    rating_2_star: int
-    rating_3_star: int
-    rating_4_star: int
-    rating_5_star: int
-    mixed_review_percent: float  # 2-4 star reviews / total
+    rating_1_star: Optional[int]
+    rating_2_star: Optional[int]
+    rating_3_star: Optional[int]
+    rating_4_star: Optional[int]
+    rating_5_star: Optional[int]
+    mixed_review_percent: Optional[float]  # 2-4 star reviews / total
     sales_count: Optional[int]
     estimated_revenue: Optional[float]
     product_url: str
