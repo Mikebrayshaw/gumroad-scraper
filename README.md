@@ -123,6 +123,14 @@ python pipeline_cli.py export --run-id <run_id> --format csv --out exports/run.c
 - Pass `--save-csv-dir ./ingestion_results` to `ingestion_runner.py` to write a timestamped CSV for every job run. Filenames use the
   job name (or platform slug) plus the run timestamp so repeated searches are preserved alongside database or Supabase storage.
 
+### Weekly Railway cron job
+- Use a dedicated Railway cron service (see `railway.cron.toml`) to run the weekly scrape/ingest job.
+- Schedule: `0 3 * * 1` (Monday 03:00 UTC).
+- Command: `python ingestion_runner.py --use-supabase --platform-slug gumroad --database-url "$DATABASE_URL"`.
+- Ensure the cron service includes `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, and
+  `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright` so Playwright and Supabase work in the job.
+- See `ops/railway-cron.md` for setup steps.
+
 ## Adding new marketplaces (Whop scaffolding included)
 - The ingestion runner now routes jobs through a platform registry (`platforms.py`).
   Each job in `ingestion_config.json` may declare a `"platform"` (defaults to `gumroad`).
