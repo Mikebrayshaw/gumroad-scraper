@@ -5,6 +5,8 @@ scrape runs and upserting products with platform-aware identifiers.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 from dataclasses import asdict
@@ -16,6 +18,12 @@ from uuid import UUID, uuid4
 from supabase import Client, create_client
 
 from gumroad_scraper import Product
+
+
+def _compute_snapshot_hash(snapshot: dict) -> str:
+    serializable = snapshot.copy()
+    serializable.pop("raw_source_hash", None)
+    return hashlib.sha256(json.dumps(serializable, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _get_env(name: str) -> str | None:
