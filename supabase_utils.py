@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 from supabase import Client, create_client
 
 from gumroad_scraper import Product
+from models import estimate_revenue
 
 
 def _compute_snapshot_hash(snapshot: dict) -> str:
@@ -113,6 +114,16 @@ class LocalRunStore:
         inserted = 0
         for product, scored in zip(products, scored_products):
             payload = asdict(product)
+            revenue_estimate, revenue_confidence = estimate_revenue(
+                payload.get("price_usd"),
+                payload.get("sales_count"),
+                payload.get("price_is_pwyw", False),
+                payload.get("currency"),
+            )
+            if payload.get("estimated_revenue") is not None:
+                revenue_estimate = payload.get("estimated_revenue")
+            if payload.get("revenue_confidence"):
+                revenue_confidence = payload.get("revenue_confidence")
             platform_product_id = extract_platform_product_id(product.product_url)
             self.snapshots.append(
                 {
@@ -130,7 +141,8 @@ class LocalRunStore:
                     "rating_avg": payload.get("average_rating"),
                     "rating_count": payload.get("total_reviews"),
                     "sales_count": payload.get("sales_count"),
-                    "revenue_estimate": payload.get("estimated_revenue"),
+                    "revenue_estimate": revenue_estimate,
+                    "revenue_confidence": revenue_confidence,
                     "opportunity_score": scored.get("opportunity_score"),
                     "scraped_at": now,
                     "raw_source_hash": payload.get("product_url"),
@@ -236,6 +248,16 @@ class SupabaseRunStore:
         snapshots = []
         for product, scored in zip(products, scored_products):
             payload = asdict(product)
+            revenue_estimate, revenue_confidence = estimate_revenue(
+                payload.get("price_usd"),
+                payload.get("sales_count"),
+                payload.get("price_is_pwyw", False),
+                payload.get("currency"),
+            )
+            if payload.get("estimated_revenue") is not None:
+                revenue_estimate = payload.get("estimated_revenue")
+            if payload.get("revenue_confidence"):
+                revenue_confidence = payload.get("revenue_confidence")
             platform_product_id = extract_platform_product_id(product.product_url)
             snapshots.append(
                 {
@@ -253,7 +275,8 @@ class SupabaseRunStore:
                     "rating_avg": payload.get("average_rating"),
                     "rating_count": payload.get("total_reviews"),
                     "sales_count": payload.get("sales_count"),
-                    "revenue_estimate": payload.get("estimated_revenue"),
+                    "revenue_estimate": revenue_estimate,
+                    "revenue_confidence": revenue_confidence,
                     "opportunity_score": scored.get("opportunity_score"),
                     "scraped_at": now,
                     "raw_source_hash": payload.get("product_url"),
