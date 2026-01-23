@@ -5,13 +5,15 @@ This module mirrors the Gumroad scraper signature so it can plug into the
 shared ingestion runner. It uses Playwright to fetch a Whop search or listing
 URL and extracts card-level metadata (name, creator, price, ratings, and URL).
 Selectors are resilient and fall back to common text patterns so the scraper
-degrades gracefully if Whop tweaks its markup.
+degrades gracefully if Whop tweaks its markup. Whop does not expose per-star
+rating breakdowns on listing cards, so the scraper records those fields as
+``None`` and leaves ``mixed_review_percent`` unset for scoring exclusions.
 """
 from __future__ import annotations
 
 import asyncio
 from typing import List, Optional
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlparse
 
 from playwright.async_api import TimeoutError as PlaywrightTimeout, async_playwright
 from tqdm import tqdm
@@ -50,11 +52,45 @@ async def _extract_product_url(card, base_url: str) -> str:
     return base_url
 
 
-def _calculate_mixed_review_percent(total_reviews: int) -> float:
-    if not total_reviews:
-        return 0.0
-    # Whop does not expose per-star counts on card views; assume neutral share is minimal
-    return 0.0
+def _format_category(text: str) -> str:
+    cleaned = _sanitize_text(text)
+    if not cleaned:
+        return ""
+    return cleaned.strip("#").strip()
+
+
+async def _extract_category(card, category_url: str) -> str:
+    category_text = await _first_text(
+        card,
+        [
+            "[data-testid='listing-category']",
+            "[data-testid='category']",
+            "[data-testid='collection-name']",
+            "[class*='category']",
+            "[class*='Category']",
+            "[class*='collection']",
+            "[class*='Collection']",
+        ],
+    )
+    if category_text:
+        return _format_category(category_text)
+
+    parsed = urlparse(category_url)
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if not segments:
+        return ""
+
+    category_markers = {"category", "categories", "collection", "collections", "discover"}
+    for marker in category_markers:
+        if marker in segments:
+            marker_index = segments.index(marker)
+            if marker_index + 1 < len(segments):
+                return _format_category(unquote(segments[marker_index + 1]).replace("-", " ").replace("_", " "))
+
+    fallback = segments[-1]
+    if fallback.lower() in {"search", "listing", "listings", "product", "products"}:
+        return ""
+    return _format_category(unquote(fallback).replace("-", " ").replace("_", " "))
 
 
 def _estimate_revenue(price_usd: float, sales_count: Optional[int]) -> Optional[float]:
@@ -101,7 +137,10 @@ async def _parse_card(
             "text=USD",
         ],
     )
-    price_usd, original_price, currency = parse_price(price_text) if price_text else (0.0, "", "USD")
+    if price_text:
+        price_usd, original_price, currency, price_is_pwyw = parse_price(price_text)
+    else:
+        price_usd, original_price, currency, price_is_pwyw = 0.0, "", "USD", False
 
     rating_text = ""
     if get_detailed_ratings:
@@ -127,23 +166,25 @@ async def _parse_card(
     )
     sales_count = parse_sales(sales_text)
     estimated_revenue = _estimate_revenue(price_usd, sales_count)
+    category = await _extract_category(card, base_url) or "whop"
 
     return Product(
         product_name=title,
         creator_name=creator,
-        category="whop",
+        category=category,
         subcategory="",
         price_usd=price_usd,
         original_price=original_price or price_text or "",
+        price_is_pwyw=price_is_pwyw,
         currency=currency,
         average_rating=average_rating,
         total_reviews=total_reviews,
-        rating_1_star=0,
-        rating_2_star=0,
-        rating_3_star=0,
-        rating_4_star=0,
-        rating_5_star=0,
-        mixed_review_percent=_calculate_mixed_review_percent(total_reviews),
+        rating_1_star=None,
+        rating_2_star=None,
+        rating_3_star=None,
+        rating_4_star=None,
+        rating_5_star=None,
+        mixed_review_percent=None,
         sales_count=sales_count,
         estimated_revenue=estimated_revenue,
         product_url=product_url,

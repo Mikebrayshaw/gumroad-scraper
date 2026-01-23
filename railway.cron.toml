@@ -1,0 +1,7 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python ingestion_runner.py --use-supabase --platform-slug gumroad --database-url $DATABASE_URL"
+cronSchedule = "0 3 * * 1"

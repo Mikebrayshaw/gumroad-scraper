@@ -7,6 +7,7 @@ like rating, reviews, price, and sales velocity.
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Iterable, Optional
 
 
@@ -80,7 +81,7 @@ def compute_rating_signal(
 
 def compute_review_health_signal(
     total_reviews: int,
-    mixed_review_percent: float,
+    mixed_review_percent: Optional[float],
 ) -> tuple[float, str]:
     """
     Compute review health signal (0-1).
@@ -107,6 +108,10 @@ def compute_review_health_signal(
     else:
         count_score = 0.2
         notes.append("minimal reviews")
+
+    if mixed_review_percent is None:
+        notes.append("mixed reviews unavailable")
+        return count_score, ", ".join(notes)
 
     # Mixed review penalty (2-4 star reviews indicate quality issues)
     # Lower mixed% is better - means mostly 5-star or clear negative feedback
@@ -214,7 +219,7 @@ def score_product(
     price_usd: float,
     average_rating: Optional[float],
     total_reviews: int,
-    mixed_review_percent: float,
+    mixed_review_percent: Optional[float],
     sales_count: Optional[int],
     estimated_revenue: Optional[float],
 ) -> ScoredProduct:
@@ -226,7 +231,7 @@ def score_product(
         price_usd: Price in USD
         average_rating: Average star rating (1-5) or None
         total_reviews: Number of reviews
-        mixed_review_percent: Percentage of 2-4 star reviews
+        mixed_review_percent: Percentage of 2-4 star reviews (or None when unavailable)
         sales_count: Number of sales or None
         estimated_revenue: Estimated revenue in USD or None
 
@@ -404,6 +409,39 @@ def _scaled_signal(value: float, max_value: float) -> float:
     return min(max(value / max_value, 0.0), 1.0)
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    if percentile <= 0:
+        return min(values)
+    if percentile >= 1:
+        return max(values)
+    sorted_values = sorted(values)
+    index = max(0, math.ceil(percentile * len(sorted_values)) - 1)
+    return sorted_values[index]
+
+
+def _adaptive_scale_from_snapshots(
+    sorted_snapshots: list[dict],
+    metric: str,
+    default_max: float,
+    *,
+    percentile: float = 0.9,
+    buffer: float = 1.1,
+) -> float:
+    deltas: list[float] = []
+    for older, newer in zip(sorted_snapshots, sorted_snapshots[1:]):
+        delta = (newer.get(metric) or 0) - (older.get(metric) or 0)
+        if delta > 0:
+            deltas.append(float(delta))
+
+    if not deltas:
+        return default_max
+
+    scale = _percentile(deltas, percentile) * buffer
+    return max(default_max, scale)
+
+
 def score_trend_from_snapshots(
     snapshots: list[dict],
     *,
@@ -477,9 +515,13 @@ def score_trend_from_snapshots(
         _delta("sales_count", last_week_start_snap or latest, prev_week_start_snap)
     )
 
-    sales_signal = _scaled_signal(sales_count_delta, 100)
-    revenue_signal = _scaled_signal(revenue_delta, 2000)
-    rating_signal = _scaled_signal(rating_count_delta, 25)
+    sales_scale = _adaptive_scale_from_snapshots(sorted_snaps, "sales_count", 100.0)
+    revenue_scale = _adaptive_scale_from_snapshots(sorted_snaps, "revenue_estimate", 2000.0)
+    rating_scale = _adaptive_scale_from_snapshots(sorted_snaps, "rating_count", 25.0)
+
+    sales_signal = _scaled_signal(sales_count_delta, sales_scale)
+    revenue_signal = _scaled_signal(revenue_delta, revenue_scale)
+    rating_signal = _scaled_signal(rating_count_delta, rating_scale)
 
     base_score = (
         sales_signal * 0.5 +
