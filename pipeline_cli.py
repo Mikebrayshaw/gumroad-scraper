@@ -7,21 +7,15 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Mapping, Optional, Sequence
 from uuid import uuid4
 
 from categories import category_url_map
 from gumroad_scraper import Product as RawGumroadProduct
 from gumroad_scraper import scrape_discover_page
 from models import ProductSnapshot, estimate_revenue
-from opportunity_engine import (
-    detect_alerts,
-    generate_opportunities,
-    hours_between_runs,
-    load_config,
-    render_alerts_markdown,
-    render_opportunity_briefs,
-)
+from opportunity_engine import detect_alerts, load_config, render_alerts_markdown
+from opportunity_scoring import score_product_dict
 from pipeline import PipelineDatabase, configure_logging, load_snapshots_from_json, snapshots_to_json
 from supabase_utils import extract_platform_product_id
 
@@ -125,6 +119,7 @@ def _snapshot_to_dict(rows: Iterable) -> List[dict]:
             "rating_avg": row.rating_avg,
             "rating_count": row.rating_count,
             "sales_count": row.sales_count,
+            "revenue_estimate": row.revenue_estimate,
         }
         for row in rows
     ]
@@ -162,6 +157,50 @@ def _write_outputs(output_dir: Path, run_id: str, opportunities: List[dict], ale
     alerts_path.write_text(render_alerts_markdown(alerts, run_id), encoding="utf-8")
 
 
+def _score_snapshot(snapshot: Mapping[str, Optional[float | str | int]]) -> dict:
+    scored = score_product_dict(
+        {
+            "product_name": snapshot.get("title", "") or "",
+            "price_usd": snapshot.get("price_amount") or 0,
+            "average_rating": snapshot.get("rating_avg"),
+            "total_reviews": snapshot.get("rating_count") or 0,
+            "mixed_review_percent": snapshot.get("mixed_review_percent") or 0,
+            "sales_count": snapshot.get("sales_count"),
+            "estimated_revenue": snapshot.get("revenue_estimate"),
+        }
+    )
+    return scored
+
+
+def render_opportunity_briefs(opportunities: Sequence[Mapping[str, Optional[float | str | int]]], top_k: int = 10) -> str:
+    lines = ["# Opportunity Briefs\n"]
+    for opp in opportunities[:top_k]:
+        title = opp.get("title") or "Untitled"
+        category = opp.get("category") or "Uncategorised"
+        url = opp.get("url") or "N/A"
+        score = opp.get("opportunity_score")
+        price_amount = opp.get("price_amount")
+        price_currency = opp.get("price_currency") or ""
+        price_display = f"${price_amount:.2f}" if isinstance(price_amount, (int, float)) else "N/A"
+        reason_summary = opp.get("reason_summary") or ""
+        rating_avg = opp.get("rating_avg")
+        rating_count = opp.get("rating_count") or 0
+        sales_count = opp.get("sales_count")
+
+        lines.append(f"## {title} ({category})")
+        lines.append(f"URL: {url}")
+        lines.append("")
+        if score is not None:
+            lines.append(f"**Opportunity score:** {score}/100.")
+        if reason_summary:
+            lines.append(f"**Signals:** {reason_summary}.")
+        lines.append(f"**Price:** {price_display} {price_currency}".strip())
+        lines.append(f"**Reviews:** {rating_count} | Rating: {rating_avg if rating_avg is not None else 'N/A'}")
+        lines.append(f"**Sales:** {sales_count if sales_count is not None else 'N/A'}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def cmd_generate_outputs(args: argparse.Namespace) -> None:
     logger = configure_logging(args.run_id)
     db = PipelineDatabase()
@@ -178,21 +217,36 @@ def cmd_generate_outputs(args: argparse.Namespace) -> None:
 
     current_run = db.get_run(args.run_id)
     previous_run = db.previous_run(args.run_id)
-    hours_delta = hours_between_runs(
-        current_run.started_at.isoformat() if current_run and current_run.started_at else None,
-        previous_run.started_at.isoformat() if previous_run and previous_run.started_at else None,
-    )
 
     snapshots = _snapshot_to_dict(snapshots_rows)
     diffs_map = _diffs_to_map(diffs_rows)
 
-    categories = {row.category for row in snapshots}
-    historical_titles = {
-        cat: db.recent_titles_by_category(cat, exclude_run_id=args.run_id, limit_runs=config["novelty"].get("history_runs", 3))
-        for cat in categories
-    }
+    opportunities: List[dict] = []
+    for snap in snapshots:
+        diff = diffs_map.get((snap.get("platform"), snap.get("product_id")), {})
+        scored = _score_snapshot(snap)
+        opportunities.append(
+            {
+                "run_id": snap.get("run_id"),
+                "platform": snap.get("platform"),
+                "product_id": snap.get("product_id"),
+                "title": snap.get("title"),
+                "url": snap.get("url"),
+                "category": snap.get("category"),
+                "creator_name": snap.get("creator_name"),
+                "price_amount": snap.get("price_amount"),
+                "price_currency": snap.get("price_currency"),
+                "rating_avg": snap.get("rating_avg"),
+                "rating_count": snap.get("rating_count"),
+                "rating_count_delta": diff.get("rating_count_delta"),
+                "sales_count": snap.get("sales_count"),
+                "sales_count_delta": diff.get("sales_count_delta"),
+                "opportunity_score": scored.get("opportunity_score"),
+                "reason_summary": scored.get("score_notes"),
+            }
+        )
 
-    opportunities = generate_opportunities(snapshots, diffs_map, historical_titles, hours_delta, config)
+    opportunities.sort(key=lambda row: row.get("opportunity_score") or 0, reverse=True)
     db.upsert_opportunity_scores(opportunities)
 
     alerts = detect_alerts(args.run_id, snapshots, diffs_map, previous_run.id if previous_run else None, config)
