@@ -101,7 +101,10 @@ async def _parse_card(
             "text=USD",
         ],
     )
-    price_usd, original_price, currency = parse_price(price_text) if price_text else (0.0, "", "USD")
+    if price_text:
+        price_usd, original_price, currency, price_is_pwyw = parse_price(price_text)
+    else:
+        price_usd, original_price, currency, price_is_pwyw = 0.0, "", "USD", False
 
     rating_text = ""
     if get_detailed_ratings:
@@ -135,6 +138,7 @@ async def _parse_card(
         subcategory="",
         price_usd=price_usd,
         original_price=original_price or price_text or "",
+        price_is_pwyw=price_is_pwyw,
         currency=currency,
         average_rating=average_rating,
         total_reviews=total_reviews,
