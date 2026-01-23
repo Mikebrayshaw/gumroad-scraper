@@ -27,7 +27,12 @@ from supabase_utils import extract_platform_product_id
 
 
 def _snapshot_from_gumroad(product: RawGumroadProduct, scraped_at: datetime, category: str) -> ProductSnapshot:
-    revenue, confidence = estimate_revenue(product.price_usd, product.sales_count, False, product.currency)
+    revenue, confidence = estimate_revenue(
+        product.price_usd,
+        product.sales_count,
+        product.price_is_pwyw,
+        product.currency,
+    )
     snapshot = ProductSnapshot(
         platform="gumroad",
         product_id=extract_platform_product_id(product.product_url),
@@ -38,7 +43,7 @@ def _snapshot_from_gumroad(product: RawGumroadProduct, scraped_at: datetime, cat
         category=category,
         price_amount=product.price_usd,
         price_currency=product.currency,
-        price_is_pwyw=False,
+        price_is_pwyw=product.price_is_pwyw,
         rating_avg=product.average_rating,
         rating_count=product.total_reviews,
         sales_count=product.sales_count,

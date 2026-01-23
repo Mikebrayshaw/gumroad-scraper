@@ -34,6 +34,7 @@ class Product:
     subcategory: str
     price_usd: float
     original_price: str
+    price_is_pwyw: bool
     currency: str
     average_rating: Optional[float]
     total_reviews: int
@@ -109,17 +110,31 @@ async def extract_product_name(card: ElementHandle, product_url: str) -> str:
     return "Unknown"
 
 
-def parse_price(price_str: str) -> tuple[float, str, str]:
+def is_pwyw_price(price_str: str) -> bool:
+    """Return True if the price text implies pay-what-you-want pricing."""
+    if not price_str:
+        return False
+    normalized = price_str.strip().lower()
+    return bool(
+        re.search(
+            r"(name your price|pay what you want|pay-what-you-want|pwyw|\$?\s*0\s*\+)",
+            normalized,
+        )
+    )
+
+
+def parse_price(price_str: str) -> tuple[float, str, str, bool]:
     """
     Parse price string and convert to USD.
-    Returns (usd_price, original_price, currency).
+    Returns (usd_price, original_price, currency, price_is_pwyw).
     """
     if not price_str or price_str.lower() in ['free', '$0', '0']:
-        return 0.0, 'Free', 'USD'
+        return 0.0, 'Free', 'USD', False
 
     # Clean up the price string
     price_str = price_str.strip()
     original = price_str
+    price_is_pwyw = is_pwyw_price(price_str)
 
     # Handle subscription prices (e.g., "$5 a month")
     if 'a month' in price_str.lower() or '/mo' in price_str.lower():
@@ -146,13 +161,13 @@ def parse_price(price_str: str) -> tuple[float, str, str]:
     if numbers:
         price_value = float(numbers[0].replace(',', ''))
     else:
-        return 0.0, original, currency
+        return 0.0, original, currency, price_is_pwyw
 
     # Convert to USD
     conversion_rate = CURRENCY_TO_USD.get(currency, 1.0)
     usd_price = round(price_value * conversion_rate, 2)
 
-    return usd_price, original, currency
+    return usd_price, original, currency, price_is_pwyw
 
 
 def parse_rating(rating_str: str) -> tuple[Optional[float], int]:
@@ -530,12 +545,14 @@ async def scrape_discover_page(
                     price_usd = 0.0
                     original_price = "Free"
                     currency = "USD"
+                    price_is_pwyw = False
 
                     if price_elem:
                         # Get the content attribute for numeric value
                         price_content = await price_elem.get_attribute('content')
                         price_text = await price_elem.inner_text()
                         original_price = price_text.strip() if price_text else "Free"
+                        price_is_pwyw = is_pwyw_price(original_price)
 
                         if price_content:
                             try:
@@ -544,7 +561,7 @@ async def scrape_discover_page(
                                 price_value = 0.0
                         else:
                             # Parse from text
-                            _, original_price, _ = parse_price(original_price)
+                            _, original_price, _, price_is_pwyw = parse_price(original_price)
                             price_value = 0.0
                             numbers = re.findall(r'[\d,]+\.?\d*', original_price)
                             if numbers:
@@ -557,6 +574,8 @@ async def scrape_discover_page(
                         # Convert to USD
                         conversion_rate = CURRENCY_TO_USD.get(currency, 1.0)
                         price_usd = round(price_value * conversion_rate, 2)
+                    else:
+                        price_is_pwyw = is_pwyw_price(original_price)
 
                     # Extract rating using class selector
                     rating_elem = await card.query_selector('.rating-average, [class*="rating-average"]')
@@ -631,6 +650,7 @@ async def scrape_discover_page(
                         subcategory=selected_subcategory,
                         price_usd=price_usd,
                         original_price=original_price,
+                        price_is_pwyw=price_is_pwyw,
                         currency=currency,
                         average_rating=average_rating,
                         total_reviews=total_reviews,
