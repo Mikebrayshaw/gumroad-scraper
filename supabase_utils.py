@@ -41,6 +41,10 @@ def _build_snapshot_payload(
         payload.get("price_is_pwyw", False),
         payload.get("currency"),
     )
+    if payload.get("estimated_revenue") is not None:
+        revenue_estimate = payload.get("estimated_revenue")
+    if payload.get("revenue_confidence") is not None:
+        revenue_confidence = payload.get("revenue_confidence")
     return {
         "platform": platform_slug,
         "product_id": platform_product_id,
