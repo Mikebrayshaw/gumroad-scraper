@@ -10,7 +10,7 @@ import re
 import json
 import random
 from datetime import datetime
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Optional
 
 from playwright.async_api import (
@@ -23,6 +23,7 @@ from playwright.async_api import (
 from tqdm import tqdm
 
 from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, category_url_map
+from models import estimate_revenue
 
 
 @dataclass
@@ -43,10 +44,14 @@ class Product:
     rating_3_star: Optional[int]
     rating_4_star: Optional[int]
     rating_5_star: Optional[int]
+    mixed_review_count: Optional[int]
     mixed_review_percent: Optional[float]  # 2-4 star reviews / total
     sales_count: Optional[int]
     estimated_revenue: Optional[float]
+    revenue_confidence: Optional[str]
     product_url: str
+    description: Optional[str] = None
+    scraped_at: datetime = field(default_factory=datetime.utcnow)
 
 
 # Currency conversion rates to USD (approximate)
@@ -140,8 +145,21 @@ def parse_price(price_str: str) -> tuple[float, str, str, bool]:
     if 'a month' in price_str.lower() or '/mo' in price_str.lower():
         price_str = re.sub(r'\s*(a month|/mo|per month).*', '', price_str, flags=re.IGNORECASE)
 
+    currency = 'UNKNOWN'
+    code_map = {
+        "USD": "USD",
+        "EUR": "EUR",
+        "GBP": "GBP",
+        "CAD": "CAD",
+        "AUD": "AUD",
+        "JPY": "JPY",
+        "INR": "INR",
+    }
+    code_match = re.search(r"\b(USD|EUR|GBP|CAD|AUD|JPY|INR)\b", price_str, re.IGNORECASE)
+    if code_match:
+        currency = code_map[code_match.group(1).upper()]
+
     # Extract currency symbol
-    currency = 'USD'
     for curr_symbol in ['€', '£', '¥', '₹', 'C$', 'A$', '$']:
         if curr_symbol in price_str:
             if curr_symbol == '$':
@@ -282,6 +300,37 @@ def parse_rating_breakdown(
     return details
 
 
+def compute_mixed_review_stats(
+    total_reviews: int,
+    rating_breakdown: dict,
+) -> tuple[Optional[int], Optional[float]]:
+    """Compute mixed review count/percent for 2-4 star ratings."""
+    mixed_sum = (
+        rating_breakdown.get('rating_2_star', 0) +
+        rating_breakdown.get('rating_3_star', 0) +
+        rating_breakdown.get('rating_4_star', 0)
+    )
+    total_sum = sum(
+        rating_breakdown.get(f'rating_{star}_star', 0) for star in range(1, 6)
+    )
+
+    if total_reviews <= 0 and total_sum == 0:
+        return None, None
+
+    if total_sum <= 100:
+        mixed_percent = round(float(mixed_sum), 2)
+        mixed_count = None
+        if total_reviews > 0:
+            mixed_count = int(round(total_reviews * (mixed_percent / 100)))
+        return mixed_count, mixed_percent
+
+    mixed_count = int(round(mixed_sum))
+    mixed_percent = None
+    if total_reviews > 0:
+        mixed_percent = round((mixed_count / total_reviews) * 100, 2)
+    return mixed_count, mixed_percent
+
+
 async def get_product_details(
     page: Page,
     product_url: str,
@@ -300,6 +349,7 @@ async def get_product_details(
         'rating_4_star': 0,
         'rating_5_star': 0,
         'sales_count': None,
+        'description': None,
     }
 
     for attempt in range(max_retries):
@@ -310,6 +360,37 @@ async def get_product_details(
 
             # Get all visible text on the page
             body_text = await page.inner_text('body')
+
+            description = None
+            meta_selectors = [
+                'meta[name="description"]',
+                'meta[property="og:description"]',
+                'meta[name="twitter:description"]',
+            ]
+            for selector in meta_selectors:
+                element = await page.query_selector(selector)
+                if element:
+                    content = await element.get_attribute("content")
+                    if content:
+                        description = content.strip()
+                        break
+            if not description:
+                for selector in (
+                    '[itemprop="description"]',
+                    '[data-testid*="description"]',
+                    '.product-description',
+                    '.description',
+                ):
+                    try:
+                        element = await page.query_selector(selector)
+                        if element:
+                            text = (await element.inner_text()).strip()
+                            if text:
+                                description = text
+                                break
+                    except Exception:
+                        continue
+            details["description"] = description
 
             # Find sales count - look for pattern like "28,133 sales" or "1.2K sales"
             sales_match = re.search(r'([\d,]+)\s*sales', body_text, re.IGNORECASE)
@@ -631,17 +712,19 @@ async def scrape_discover_page(
                         )
                         await detail_page.close()
 
-                    # Calculate mixed review percentage (2-4 stars)
-                    # Note: rating_breakdown values are already percentages from the page
-                    mixed_percent = (
-                        rating_breakdown['rating_2_star'] +
-                        rating_breakdown['rating_3_star'] +
-                        rating_breakdown['rating_4_star']
+                    mixed_count, mixed_percent = compute_mixed_review_stats(
+                        total_reviews,
+                        rating_breakdown,
                     )
 
-                    # Estimate revenue
+                    # Estimate revenue (conservative)
                     sales = rating_breakdown['sales_count']
-                    estimated_revenue = round(sales * price_usd, 2) if sales and price_usd else None
+                    estimated_revenue, revenue_confidence = estimate_revenue(
+                        price_usd,
+                        sales,
+                        price_is_pwyw,
+                        currency,
+                    )
 
                     product = Product(
                         product_name=product_name,
@@ -659,10 +742,13 @@ async def scrape_discover_page(
                         rating_3_star=rating_breakdown['rating_3_star'],
                         rating_4_star=rating_breakdown['rating_4_star'],
                         rating_5_star=rating_breakdown['rating_5_star'],
-                        mixed_review_percent=round(mixed_percent, 2),
+                        mixed_review_count=mixed_count,
+                        mixed_review_percent=mixed_percent,
                         sales_count=sales,
                         estimated_revenue=estimated_revenue,
+                        revenue_confidence=revenue_confidence,
                         product_url=product_url,
+                        description=rating_breakdown.get('description'),
                     )
                     products.append(product)
                     progress.update(1)

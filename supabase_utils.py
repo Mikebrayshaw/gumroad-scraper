@@ -53,11 +53,15 @@ def _build_snapshot_payload(
         "creator_name": payload.get("creator_name"),
         "creator_url": None,
         "category": payload.get("category"),
+        "subcategory": payload.get("subcategory"),
+        "description": payload.get("description"),
         "price_amount": payload.get("price_usd"),
         "price_currency": payload.get("currency", "USD"),
         "price_is_pwyw": payload.get("price_is_pwyw", False),
         "rating_avg": payload.get("average_rating"),
         "rating_count": payload.get("total_reviews"),
+        "mixed_review_count": payload.get("mixed_review_count"),
+        "mixed_review_percent": payload.get("mixed_review_percent"),
         "sales_count": payload.get("sales_count"),
         "revenue_estimate": revenue_estimate,
         "revenue_confidence": revenue_confidence,
@@ -378,6 +382,16 @@ class SupabasePersistence:
         records = []
         for product in products:
             payload = asdict(product)
+            revenue_estimate, revenue_confidence = estimate_revenue(
+                payload.get("price_usd"),
+                payload.get("sales_count"),
+                payload.get("price_is_pwyw", False),
+                payload.get("currency"),
+            )
+            if payload.get("estimated_revenue") is not None:
+                revenue_estimate = payload.get("estimated_revenue")
+            if payload.get("revenue_confidence") is not None:
+                revenue_confidence = payload.get("revenue_confidence")
             platform_product_id = extract_platform_product_id(product.product_url)
             records.append(
                 {
@@ -388,6 +402,7 @@ class SupabasePersistence:
                     "creator_name": payload.get("creator_name"),
                     "category": payload.get("category"),
                     "subcategory": payload.get("subcategory"),
+                    "description": payload.get("description"),
                     "price_usd": payload.get("price_usd"),
                     "original_price": payload.get("original_price"),
                     "currency": payload.get("currency"),
@@ -398,9 +413,11 @@ class SupabasePersistence:
                     "rating_3_star": payload.get("rating_3_star"),
                     "rating_4_star": payload.get("rating_4_star"),
                     "rating_5_star": payload.get("rating_5_star"),
+                    "mixed_review_count": payload.get("mixed_review_count"),
                     "mixed_review_percent": payload.get("mixed_review_percent"),
                     "sales_count": payload.get("sales_count"),
-                    "estimated_revenue": payload.get("estimated_revenue"),
+                    "estimated_revenue": revenue_estimate,
+                    "revenue_confidence": revenue_confidence,
                     "last_run_id": str(run_id),
                     "last_seen_at": now,
                 }

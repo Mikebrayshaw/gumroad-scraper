@@ -78,11 +78,15 @@ class ProductSnapshotRow(Base):
     creator_name = Column(Text, nullable=True)
     creator_url = Column(Text, nullable=True)
     category = Column(Text, nullable=True)
+    subcategory = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
     price_amount = Column(Float, nullable=True)
     price_currency = Column(String, nullable=True)
     price_is_pwyw = Column(Boolean, default=False)
     rating_avg = Column(Float, nullable=True)
     rating_count = Column(Integer, nullable=True)
+    mixed_review_count = Column(Integer, nullable=True)
+    mixed_review_percent = Column(Float, nullable=True)
     sales_count = Column(Integer, nullable=True)
     revenue_estimate = Column(Float, nullable=True)
     revenue_confidence = Column(String, nullable=False, default="low")
@@ -261,11 +265,15 @@ class PipelineDatabase:
                         creator_name=snapshot.creator_name,
                         creator_url=snapshot.creator_url,
                         category=snapshot.category,
+                        subcategory=snapshot.subcategory,
+                        description=snapshot.description,
                         price_amount=snapshot.price_amount,
                         price_currency=snapshot.price_currency,
                         price_is_pwyw=snapshot.price_is_pwyw,
                         rating_avg=snapshot.rating_avg,
                         rating_count=snapshot.rating_count,
+                        mixed_review_count=snapshot.mixed_review_count,
+                        mixed_review_percent=snapshot.mixed_review_percent,
                         sales_count=snapshot.sales_count,
                         revenue_estimate=snapshot.revenue_estimate,
                         revenue_confidence=snapshot.revenue_confidence,
@@ -411,11 +419,15 @@ class PipelineDatabase:
             "creator_name": snap.creator_name,
             "creator_url": snap.creator_url,
             "category": snap.category,
+            "subcategory": snap.subcategory,
+            "description": snap.description,
             "price_amount": snap.price_amount,
             "price_currency": snap.price_currency,
             "price_is_pwyw": snap.price_is_pwyw,
             "rating_avg": snap.rating_avg,
             "rating_count": snap.rating_count,
+            "mixed_review_count": snap.mixed_review_count,
+            "mixed_review_percent": snap.mixed_review_percent,
             "sales_count": snap.sales_count,
             "revenue_estimate": snap.revenue_estimate,
             "revenue_confidence": snap.revenue_confidence,
@@ -461,11 +473,15 @@ def load_snapshots_from_json(path: str) -> tuple[str, List[ProductSnapshot], dic
             creator_name=item.get("creator_name", ""),
             creator_url=item.get("creator_url"),
             category=item.get("category"),
+            subcategory=item.get("subcategory"),
+            description=item.get("description"),
             price_amount=item.get("price_amount"),
             price_currency=item.get("price_currency"),
             price_is_pwyw=item.get("price_is_pwyw", False),
             rating_avg=item.get("rating_avg"),
             rating_count=item.get("rating_count"),
+            mixed_review_count=item.get("mixed_review_count"),
+            mixed_review_percent=item.get("mixed_review_percent"),
             sales_count=item.get("sales_count"),
             revenue_estimate=item.get("revenue_estimate"),
             revenue_confidence=item.get("revenue_confidence", "low"),
@@ -484,4 +500,3 @@ def snapshots_to_json(run_id: str, meta: dict, snapshots: Iterable[ProductSnapsh
         "run_meta": meta,
         "products": [s.to_dict() for s in snapshots],
     }
-
