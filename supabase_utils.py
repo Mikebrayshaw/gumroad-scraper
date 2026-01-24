@@ -27,6 +27,45 @@ def _compute_snapshot_hash(snapshot: dict) -> str:
     return hashlib.sha256(json.dumps(serializable, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _build_snapshot_payload(
+    *,
+    platform_slug: str,
+    product: Product,
+    platform_product_id: str,
+    scraped_at: str,
+) -> dict:
+    payload = asdict(product)
+    revenue_estimate, revenue_confidence = estimate_revenue(
+        payload.get("price_usd"),
+        payload.get("sales_count"),
+        payload.get("price_is_pwyw", False),
+        payload.get("currency"),
+    )
+    if payload.get("estimated_revenue") is not None:
+        revenue_estimate = payload.get("estimated_revenue")
+    if payload.get("revenue_confidence") is not None:
+        revenue_confidence = payload.get("revenue_confidence")
+    return {
+        "platform": platform_slug,
+        "product_id": platform_product_id,
+        "url": product.product_url,
+        "title": payload.get("product_name"),
+        "creator_name": payload.get("creator_name"),
+        "creator_url": None,
+        "category": payload.get("category"),
+        "price_amount": payload.get("price_usd"),
+        "price_currency": payload.get("currency", "USD"),
+        "price_is_pwyw": payload.get("price_is_pwyw", False),
+        "rating_avg": payload.get("average_rating"),
+        "rating_count": payload.get("total_reviews"),
+        "sales_count": payload.get("sales_count"),
+        "revenue_estimate": revenue_estimate,
+        "revenue_confidence": revenue_confidence,
+        "tags": [],
+        "scraped_at": scraped_at,
+    }
+
+
 def _get_env(name: str) -> str | None:
     return os.getenv(name)
 
@@ -113,39 +152,20 @@ class LocalRunStore:
         now = datetime.utcnow().isoformat()
         inserted = 0
         for product, scored in zip(products, scored_products):
-            payload = asdict(product)
-            revenue_estimate, revenue_confidence = estimate_revenue(
-                payload.get("price_usd"),
-                payload.get("sales_count"),
-                payload.get("price_is_pwyw", False),
-                payload.get("currency"),
-            )
-            if payload.get("estimated_revenue") is not None:
-                revenue_estimate = payload.get("estimated_revenue")
-            if payload.get("revenue_confidence"):
-                revenue_confidence = payload.get("revenue_confidence")
             platform_product_id = extract_platform_product_id(product.product_url)
+            snapshot_payload = _build_snapshot_payload(
+                platform_slug=self.platform_slug,
+                product=product,
+                platform_product_id=platform_product_id,
+                scraped_at=now,
+            )
             self.snapshots.append(
                 {
-                    "platform": self.platform_slug,
-                    "product_id": platform_product_id,
+                    **snapshot_payload,
                     "run_id": str(run_id),
-                    "url": product.product_url,
-                    "title": payload.get("product_name"),
-                    "creator_name": payload.get("creator_name"),
-                    "category": payload.get("category"),
-                    "subcategory": payload.get("subcategory"),
-                    "price_amount": payload.get("price_usd"),
-                    "price_currency": payload.get("currency", "USD"),
-                    "price_is_pwyw": payload.get("price_is_pwyw", False),
-                    "rating_avg": payload.get("average_rating"),
-                    "rating_count": payload.get("total_reviews"),
-                    "sales_count": payload.get("sales_count"),
-                    "revenue_estimate": revenue_estimate,
-                    "revenue_confidence": revenue_confidence,
+                    "subcategory": product.subcategory,
                     "opportunity_score": scored.get("opportunity_score"),
-                    "scraped_at": now,
-                    "raw_source_hash": payload.get("product_url"),
+                    "raw_source_hash": _compute_snapshot_hash(snapshot_payload),
                 }
             )
             inserted += 1
@@ -247,39 +267,20 @@ class SupabaseRunStore:
         now = datetime.utcnow().isoformat()
         snapshots = []
         for product, scored in zip(products, scored_products):
-            payload = asdict(product)
-            revenue_estimate, revenue_confidence = estimate_revenue(
-                payload.get("price_usd"),
-                payload.get("sales_count"),
-                payload.get("price_is_pwyw", False),
-                payload.get("currency"),
-            )
-            if payload.get("estimated_revenue") is not None:
-                revenue_estimate = payload.get("estimated_revenue")
-            if payload.get("revenue_confidence"):
-                revenue_confidence = payload.get("revenue_confidence")
             platform_product_id = extract_platform_product_id(product.product_url)
+            snapshot_payload = _build_snapshot_payload(
+                platform_slug=self.platform_slug,
+                product=product,
+                platform_product_id=platform_product_id,
+                scraped_at=now,
+            )
             snapshots.append(
                 {
-                    "platform": self.platform_slug,
-                    "product_id": platform_product_id,
+                    **snapshot_payload,
                     "run_id": str(run_id),
-                    "url": product.product_url,
-                    "title": payload.get("product_name"),
-                    "creator_name": payload.get("creator_name"),
-                    "category": payload.get("category"),
-                    "subcategory": payload.get("subcategory"),
-                    "price_amount": payload.get("price_usd"),
-                    "price_currency": payload.get("currency", "USD"),
-                    "price_is_pwyw": payload.get("price_is_pwyw", False),
-                    "rating_avg": payload.get("average_rating"),
-                    "rating_count": payload.get("total_reviews"),
-                    "sales_count": payload.get("sales_count"),
-                    "revenue_estimate": revenue_estimate,
-                    "revenue_confidence": revenue_confidence,
+                    "subcategory": product.subcategory,
                     "opportunity_score": scored.get("opportunity_score"),
-                    "scraped_at": now,
-                    "raw_source_hash": payload.get("product_url"),
+                    "raw_source_hash": _compute_snapshot_hash(snapshot_payload),
                 }
             )
 
