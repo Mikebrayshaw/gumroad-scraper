@@ -45,9 +45,12 @@ class ProductRecord(Base):
     rating_3_star = Column(Integer, nullable=True)
     rating_4_star = Column(Integer, nullable=True)
     rating_5_star = Column(Integer, nullable=True)
+    mixed_review_count = Column(Integer, nullable=True)
     mixed_review_percent = Column(Float, nullable=True)
     sales_count = Column(Integer, nullable=True)
     estimated_revenue = Column(Float, nullable=True)
+    revenue_confidence = Column(String, nullable=True)
+    description = Column(String, nullable=True)
     first_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_crawled_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -71,9 +74,12 @@ class ProductRecord(Base):
             rating_3_star=payload.get("rating_3_star"),
             rating_4_star=payload.get("rating_4_star"),
             rating_5_star=payload.get("rating_5_star"),
+            mixed_review_count=payload.get("mixed_review_count"),
             mixed_review_percent=payload.get("mixed_review_percent"),
             sales_count=payload.get("sales_count"),
             estimated_revenue=payload.get("estimated_revenue"),
+            revenue_confidence=payload.get("revenue_confidence"),
+            description=payload.get("description"),
             first_seen_at=crawled_at,
             last_crawled_at=crawled_at,
             last_updated_at=crawled_at,

@@ -19,7 +19,15 @@ from urllib.parse import unquote, urljoin, urlparse
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout, async_playwright
 from tqdm import tqdm
 
-from gumroad_scraper import Product, parse_price, parse_rating, parse_rating_breakdown, parse_sales
+from gumroad_scraper import (
+    Product,
+    compute_mixed_review_stats,
+    parse_price,
+    parse_rating,
+    parse_rating_breakdown,
+    parse_sales,
+)
+from models import estimate_revenue
 
 
 def _sanitize_text(value: Optional[str]) -> str:
@@ -94,10 +102,6 @@ async def _extract_category(card, category_url: str) -> str:
     return _format_category(unquote(fallback).replace("-", " ").replace("_", " "))
 
 
-def _estimate_revenue(price_usd: float, sales_count: Optional[int]) -> Optional[float]:
-    if sales_count is None:
-        return None
-    return round(price_usd * sales_count, 2)
 
 
 async def _parse_card(
@@ -167,7 +171,7 @@ async def _parse_card(
         ],
     )
     sales_count = parse_sales(sales_text)
-    estimated_revenue = _estimate_revenue(price_usd, sales_count)
+    estimated_revenue = None
     category = await _extract_category(card, base_url) or "whop"
 
     detail_data: dict[str, Optional[float] | Optional[int] | bool] = {}
@@ -189,7 +193,6 @@ async def _parse_card(
             total_reviews = detail_reviews
         if isinstance(detail_sales, int):
             sales_count = detail_sales
-            estimated_revenue = _estimate_revenue(price_usd, sales_count)
 
     rating_1_star = detail_data.get("rating_1_star") if detail_fetched else None
     rating_2_star = detail_data.get("rating_2_star") if detail_fetched else None
@@ -199,6 +202,22 @@ async def _parse_card(
     mixed_review_percent = None
     if detail_fetched and all(isinstance(value, int) for value in (rating_1_star, rating_2_star, rating_3_star, rating_4_star, rating_5_star)):
         mixed_review_percent = round(float(rating_2_star + rating_3_star + rating_4_star), 2)
+    mixed_review_count, mixed_review_percent = compute_mixed_review_stats(
+        total_reviews,
+        {
+            "rating_1_star": rating_1_star or 0,
+            "rating_2_star": rating_2_star or 0,
+            "rating_3_star": rating_3_star or 0,
+            "rating_4_star": rating_4_star or 0,
+            "rating_5_star": rating_5_star or 0,
+        },
+    )
+    estimated_revenue, revenue_confidence = estimate_revenue(
+        price_usd,
+        sales_count,
+        price_is_pwyw,
+        currency,
+    )
 
     return Product(
         product_name=title,
@@ -216,10 +235,13 @@ async def _parse_card(
         rating_3_star=rating_3_star,
         rating_4_star=rating_4_star,
         rating_5_star=rating_5_star,
+        mixed_review_count=mixed_review_count,
         mixed_review_percent=mixed_review_percent,
         sales_count=sales_count,
         estimated_revenue=estimated_revenue,
+        revenue_confidence=revenue_confidence,
         product_url=product_url,
+        description=None,
     )
 
 

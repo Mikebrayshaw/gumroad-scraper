@@ -32,6 +32,10 @@ class ProductSnapshot:
     sales_count: Optional[int]
     revenue_estimate: Optional[float]
     revenue_confidence: str
+    subcategory: Optional[str] = None
+    description: Optional[str] = None
+    mixed_review_count: Optional[int] = None
+    mixed_review_percent: Optional[float] = None
     tags: List[str] = field(default_factory=list)
     scraped_at: datetime = field(default_factory=datetime.utcnow)
     raw_source_hash: str = ""
@@ -65,10 +69,12 @@ def estimate_revenue(
 
     Assumptions:
     - Revenue is approximated as ``price_amount * sales_count`` when both are present.
+    - Revenue is discounted by a conservative multiplier.
     - If sales are missing, revenue is ``None`` with ``low`` confidence.
     - Pay-what-you-want pricing and unknown currency each reduce confidence by one tier.
     - Confidence tiers: ``high`` -> ``med`` -> ``low``.
     """
+    conservative_multiplier = 0.85
 
     def downgrade(confidence: str) -> str:
         if confidence == "high":
@@ -80,7 +86,7 @@ def estimate_revenue(
     if sales_count is None or price_amount is None:
         return None, "low"
 
-    revenue = round(price_amount * sales_count, 2)
+    revenue = round(price_amount * sales_count * conservative_multiplier, 2)
     confidence = "high"
 
     if price_is_pwyw or not price_currency:
@@ -89,4 +95,3 @@ def estimate_revenue(
         confidence = downgrade(confidence)
 
     return revenue, confidence
-
