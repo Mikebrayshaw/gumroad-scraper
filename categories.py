@@ -299,3 +299,14 @@ def category_url_map() -> Dict[str, str]:
     urls = {cat.slug: build_discover_url(cat.slug) for cat in CATEGORY_TREE}
     urls["discover"] = "https://gumroad.com/discover"
     return urls
+
+
+def build_search_url(query: str) -> str:
+    """Construct a Gumroad search URL for the given query."""
+    params = {"query": query}
+    return f"https://gumroad.com/discover?{urlencode(params)}"
+
+
+def get_all_category_slugs() -> list[str]:
+    """Return a list of all category slugs (excluding 'discover')."""
+    return [cat.slug for cat in CATEGORY_TREE]

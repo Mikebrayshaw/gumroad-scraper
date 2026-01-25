@@ -5,6 +5,12 @@ Includes opportunity scoring, saved searches, and watchlists.
 """
 
 import asyncio
+import sys
+from datetime import datetime
+
+# Fix for Python 3.14+ on Windows - ensure ProactorEventLoop is used for subprocess support
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import pandas as pd
 import streamlit as st
@@ -61,7 +67,7 @@ selected_category: Category = CATEGORY_BY_LABEL[category_label]
 subcategory_options: tuple[Subcategory, ...] = selected_category.subcategories
 category_slug = selected_category.slug
 
-# Reset subcategory when category changes
+# Reset subcategory and clear old results when category changes
 if "last_category" not in st.session_state:
     st.session_state.last_category = category_label
 if "subcategory_choice" not in st.session_state:
@@ -69,6 +75,12 @@ if "subcategory_choice" not in st.session_state:
 if st.session_state.last_category != category_label:
     st.session_state.last_category = category_label
     st.session_state.subcategory_choice = subcategory_options[0].label
+    # Clear previous results when category changes to prevent showing stale data
+    st.session_state.results = None
+    st.session_state.scored_results = None
+    st.session_state.current_run_id = None
+    st.session_state.current_category_slug = None
+    st.session_state.current_subcategory_slug = None
 
 subcategory_label = st.sidebar.selectbox(
     "Subcategory",
@@ -103,6 +115,14 @@ rate_limit = st.sidebar.slider(
     step=100,
     help="Delay between requests to avoid detection",
 )
+
+st.sidebar.markdown("---")
+if st.sidebar.button("Clear Cache", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state.results = None
+    st.session_state.scored_results = None
+    st.session_state.current_run_id = None
+    st.sidebar.success("Cache cleared!")
 
 # Initialize session state
 if "results" not in st.session_state:
@@ -196,6 +216,13 @@ def run_scraper(
     """Run the scraper and return products."""
 
     url = build_discover_url(category_slug, subcategory_slug)
+
+    # Console debug: what is actually being passed to the scraper
+    print(f"\n>>> run_scraper() called with:")
+    print(f">>>   category_slug: '{category_slug}'")
+    print(f">>>   subcategory_slug: '{subcategory_slug}'")
+    print(f">>>   Built URL: {url}")
+
     st.write(
         f"Scraping with run_id={run_id} | category={category_slug} | subcategory={subcategory_slug or 'all'} | storage={storage_mode}"
     )
@@ -262,9 +289,30 @@ with tab_scrape:
         )
 
     if scrape_button:
+        # Clear all caches before scraping to ensure fresh data
+        st.cache_data.clear()
+
         st.session_state.scraping = True
         st.session_state.results = None
         st.session_state.scored_results = None
+
+        # DEBUG: Show timestamp and exactly what we're about to scrape
+        scrape_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.warning(f"🕐 SCRAPE STARTED: {scrape_timestamp}")
+
+        # Print to console for debugging
+        print(f"\n{'='*60}")
+        print(f"SCRAPE DEBUG - {scrape_timestamp}")
+        print(f"{'='*60}")
+        print(f"UI Selection:")
+        print(f"  - category_label (dropdown): '{category_label}'")
+        print(f"  - subcategory_label (dropdown): '{subcategory_label}'")
+        print(f"Resolved Values:")
+        print(f"  - category_slug: '{category_slug}'")
+        print(f"  - subcategory_slug: '{subcategory_slug}'")
+        print(f"{'='*60}\n")
+
+        st.info(f"**UI Selection:** Category='{category_label}', Subcategory='{subcategory_label}'")
 
         subcategory_text = f" / {subcategory_label}" if subcategory_slug else ""
         run_id = run_store.start_run(
@@ -279,8 +327,13 @@ with tab_scrape:
         st.session_state.current_subcategory_slug = subcategory_slug
 
         scrape_url = build_discover_url(category_slug, subcategory_slug)
+
+        # Print exact URL to console
+        print(f">>> SCRAPING URL: {scrape_url}")
+        print(f">>> Passed to run_scraper: category_slug='{category_slug}', subcategory_slug='{subcategory_slug}'")
+
         st.info(f"Run ID: {run_id} | Storage: {storage_label}")
-        st.code(f"Navigating to: {scrape_url}")
+        st.code(f"🔗 EXACT URL BEING SCRAPED:\n{scrape_url}")
         st.write(
             f"Selected category: **{category_label}** | Selected subcategory: **{subcategory_label}** | Mode: {storage_mode}"
         )
@@ -313,7 +366,14 @@ with tab_scrape:
                     st.write("First scraped product URLs:")
                     st.code("\n".join(first_urls))
 
-                st.success(f"Scraped {len(products)} products!")
+                complete_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                print(f"\n>>> SCRAPE COMPLETED: {complete_timestamp}")
+                print(f">>> Products scraped: {len(products)}")
+                if products:
+                    print(f">>> First product: {products[0].product_name}")
+                    print(f">>> First product URL: {products[0].product_url}")
+
+                st.success(f"✅ Scraped {len(products)} products at {complete_timestamp}")
             except Exception as e:
                 st.error(f"Error: {e}")
                 run_store.complete_run(run_id, status="failed", error=str(e))
