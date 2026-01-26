@@ -41,6 +41,7 @@ from alerts import (
     SavedSearch,
 )
 from supabase_utils import SupabaseRunStore, get_supabase_client
+from scripts.full_gumroad_scrape import scrape_all_categories
 
 
 st.set_page_config(
@@ -275,7 +276,7 @@ def to_dataframe(products: list[Product], scored: list[dict]) -> pd.DataFrame:
 
 
 # Create tabs for different features
-tab_scrape, tab_saved, tab_watchlist = st.tabs(["Scrape", "Saved Searches", "Watchlist"])
+tab_scrape, tab_saved, tab_watchlist, tab_full_scrape = st.tabs(["Scrape", "Saved Searches", "Watchlist", "Full Scrape"])
 
 with tab_scrape:
     # Main scraping area
@@ -715,3 +716,116 @@ with tab_watchlist:
         )
     else:
         st.info("Select a category and click **Scrape** to get started.")
+
+
+with tab_full_scrape:
+    st.subheader("Full Scrape - All Categories")
+
+    st.warning(
+        "**This will scrape ALL categories.** Takes 3-4 hours. "
+        "Make sure you have a stable connection and Supabase is configured."
+    )
+
+    # Initialize session state for full scrape
+    if "full_scrape_running" not in st.session_state:
+        st.session_state.full_scrape_running = False
+    if "full_scrape_result" not in st.session_state:
+        st.session_state.full_scrape_result = None
+
+    # Settings
+    col1, col2 = st.columns(2)
+    with col1:
+        full_max_products = st.number_input(
+            "Max products per category",
+            min_value=10,
+            max_value=500,
+            value=100,
+            step=10,
+            key="full_scrape_max",
+        )
+    with col2:
+        full_rate_limit = st.slider(
+            "Rate limit (ms)",
+            min_value=300,
+            max_value=2000,
+            value=500,
+            step=100,
+            key="full_scrape_rate",
+        )
+
+    full_fast_mode = st.checkbox("Fast mode (skip detailed pages)", value=False, key="full_scrape_fast")
+
+    st.markdown("---")
+
+    # Big start button
+    if st.button(
+        "Start Full Scrape",
+        type="primary",
+        use_container_width=True,
+        disabled=st.session_state.full_scrape_running,
+    ):
+        st.session_state.full_scrape_running = True
+        st.session_state.full_scrape_result = None
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        category_status = st.empty()
+
+        from categories import CATEGORY_TREE
+        total_categories = len(CATEGORY_TREE)
+
+        def update_progress(category: str, idx: int, total: int, products: int):
+            progress = (idx) / total
+            progress_bar.progress(progress)
+            status_text.write(f"**Progress:** {idx}/{total} categories | {products} products scraped")
+            category_status.write(f"Currently scraping: **{category}**")
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            result = loop.run_until_complete(
+                scrape_all_categories(
+                    max_per_category=full_max_products,
+                    rate_limit_ms=full_rate_limit,
+                    fast_mode=full_fast_mode,
+                    progress_callback=update_progress,
+                )
+            )
+            loop.close()
+
+            progress_bar.progress(1.0)
+            status_text.write(f"**Completed!** {result['total_products']} products from {result['total_categories']} categories")
+            category_status.empty()
+
+            st.session_state.full_scrape_result = result
+            st.success(f"Full scrape completed! {result['total_products']} products saved to Supabase.")
+
+        except Exception as e:
+            st.error(f"Full scrape failed: {e}")
+
+        finally:
+            st.session_state.full_scrape_running = False
+
+    # Show previous result if available
+    if st.session_state.full_scrape_result:
+        result = st.session_state.full_scrape_result
+
+        st.markdown("---")
+        st.subheader("Last Full Scrape Results")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Products", result["total_products"])
+        with col2:
+            st.metric("Categories", result["total_categories"])
+        with col3:
+            errors = len([c for c in result["categories"] if c["status"] == "error"])
+            st.metric("Errors", errors)
+
+        # Show category breakdown
+        with st.expander("Category Breakdown"):
+            for cat in result["categories"]:
+                status_icon = "+" if cat["status"] == "success" else "x"
+                error_msg = f" - {cat.get('error', '')}" if cat["status"] == "error" else ""
+                st.text(f"[{status_icon}] {cat['category']}: {cat['products']} products{error_msg}")

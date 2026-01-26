@@ -1,14 +1,21 @@
-"""Workflow-friendly full Gumroad scrape runner."""
+"""Workflow-friendly full Gumroad scrape runner.
+
+Supports both CLI/GitHub Actions usage and Streamlit UI integration.
+"""
 from __future__ import annotations
 
 import argparse
 import asyncio
 import random
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
+from typing import Callable, Optional
 
 from categories import CATEGORY_TREE, build_discover_url
 from gumroad_scraper import Product, scrape_discover_page, save_to_csv
+from opportunity_scoring import score_product_dict
+from supabase_utils import SupabaseRunStore, get_supabase_client
 
 MAX_PRODUCTS = 50
 CATEGORY_DELAY_SECONDS = 60
@@ -75,7 +82,96 @@ async def _scrape_with_retry(
     return []
 
 
+async def scrape_all_categories(
+    max_per_category: int = 100,
+    rate_limit_ms: int = 500,
+    fast_mode: bool = False,
+    progress_callback: Optional[Callable[[str, int, int, int], None]] = None,
+) -> dict:
+    """
+    Scrape all Gumroad categories and save to Supabase.
+
+    This function is designed for Streamlit UI integration with progress callbacks.
+
+    Args:
+        max_per_category: Max products to scrape per category
+        rate_limit_ms: Delay between requests
+        fast_mode: Skip detailed product pages if True
+        progress_callback: Optional callback(category_label, current_idx, total_categories, products_so_far)
+
+    Returns:
+        Summary dict with totals
+    """
+    client = get_supabase_client()
+    run_store = SupabaseRunStore(client)
+
+    total_categories = len(CATEGORY_TREE)
+    total_products = 0
+    category_results = []
+
+    for idx, category in enumerate(CATEGORY_TREE):
+        category_label = category.label
+        category_slug = category.slug
+
+        if progress_callback:
+            progress_callback(category_label, idx, total_categories, total_products)
+
+        try:
+            # Start a run for this category
+            run_id = run_store.start_run(
+                category=category_slug,
+                subcategory="",
+                max_products=max_per_category,
+                fast_mode=fast_mode,
+                rate_limit_ms=rate_limit_ms,
+            )
+
+            url = build_discover_url(category_slug, "")
+
+            products = await scrape_discover_page(
+                category_url=url,
+                category_slug=category_slug,
+                subcategory_slug="",
+                max_products=max_per_category,
+                get_detailed_ratings=not fast_mode,
+                rate_limit_ms=rate_limit_ms,
+            )
+
+            # Score products
+            product_dicts = [asdict(p) for p in products]
+            scored_products = [score_product_dict(p) for p in product_dicts]
+
+            # Save to Supabase
+            totals = run_store.record_snapshots(run_id, products, scored_products)
+            run_store.complete_run(run_id, totals={"total": len(products), **totals})
+
+            total_products += len(products)
+            category_results.append({
+                "category": category_label,
+                "slug": category_slug,
+                "products": len(products),
+                "status": "success",
+            })
+
+        except Exception as e:
+            category_results.append({
+                "category": category_label,
+                "slug": category_slug,
+                "products": 0,
+                "status": "error",
+                "error": str(e),
+            })
+
+    return {
+        "total_categories": total_categories,
+        "total_products": total_products,
+        "completed_at": datetime.utcnow().isoformat(),
+        "categories": category_results,
+    }
+
+
 async def run() -> None:
+    """CLI entry point for GitHub Actions workflow."""
     args = parse_args()
     categories = list(CATEGORY_TREE)
     if args.mode == "test":
