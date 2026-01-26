@@ -18,6 +18,9 @@ jobs:
     timeout-minutes: 210
     permissions:
       contents: read
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,6 +40,7 @@ jobs:
       - name: Run full scrape
         env:
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           python scripts/full_gumroad_scrape.py --mode "${{ inputs.mode }}"
 
