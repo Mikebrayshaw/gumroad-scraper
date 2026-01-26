@@ -148,7 +148,10 @@ def derive_category_labels(url: str) -> Tuple[str, str]:
         return f"query:{query_term}", subcategory
     if category:
         return category, subcategory
-    return "discover", subcategory
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if not path_parts or path_parts[0] == "discover":
+        return "discover", ""
+    return path_parts[0], path_parts[1] if len(path_parts) > 1 else ""
 
 
 def upsert_products(session: Session, products: Iterable[Product], crawled_at: datetime) -> dict:
