@@ -42,7 +42,7 @@ jobs:
           PLAYWRIGHT_BROWSERS_PATH: /home/runner/.cache/ms-playwright
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          python scripts/full_gumroad_scrape.py --mode "${{ inputs.mode }}"
+          PYTHONPATH=. python scripts/full_gumroad_scrape.py --mode "${{ inputs.mode }}"
 
       - name: Verify scrape outputs
         run: |
