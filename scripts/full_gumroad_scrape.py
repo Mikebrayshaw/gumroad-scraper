@@ -14,6 +14,7 @@ MAX_PRODUCTS = 50
 CATEGORY_DELAY_SECONDS = 60
 SUBCATEGORY_DELAY_SECONDS = 30
 FAILURE_COOLDOWN_SECONDS = 300
+SECONDS_PER_MINUTE = 60
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,9 +32,10 @@ def _apply_jitter(seconds: int) -> int:
     return seconds + random.randint(5, 15)
 
 
-async def _wait_with_jitter(seconds: int, message: str) -> None:
+async def _wait_with_jitter(seconds: int, label: str) -> None:
     wait_time = _apply_jitter(seconds)
-    print(f"{message} (jitter: {wait_time - seconds}s)")
+    jitter = wait_time - seconds
+    print(f"{label}: waiting {wait_time}s (base {seconds}s + {jitter}s jitter)")
     await asyncio.sleep(wait_time)
 
 
@@ -65,9 +67,8 @@ async def _scrape_with_retry(
         except Exception as exc:  # noqa: BLE001 - workflow resilience
             print(f"Scrape failed for {url}: {exc}")
             if attempt == 0:
-                print(
-                    f"Waiting {FAILURE_COOLDOWN_SECONDS // 60} minutes before retrying failed scrape..."
-                )
+                minutes = FAILURE_COOLDOWN_SECONDS // SECONDS_PER_MINUTE
+                print(f"Waiting {minutes} minutes before retrying failed scrape...")
                 await asyncio.sleep(FAILURE_COOLDOWN_SECONDS)
             else:
                 print("Retry failed; skipping this scrape.")
@@ -118,7 +119,7 @@ async def run() -> None:
             if sub_index < len(subcategories):
                 await _wait_with_jitter(
                     SUBCATEGORY_DELAY_SECONDS,
-                    f"Waiting {SUBCATEGORY_DELAY_SECONDS} seconds before next subcategory...",
+                    "Waiting before next subcategory",
                 )
 
         category_csv = output_dir / f"{category.slug}.csv"
@@ -127,7 +128,7 @@ async def run() -> None:
         if category_index < len(categories):
             await _wait_with_jitter(
                 CATEGORY_DELAY_SECONDS,
-                f"Waiting {CATEGORY_DELAY_SECONDS} seconds before next category...",
+                "Waiting before next category",
             )
 
     master_csv = output_dir / "gumroad_full.csv"
