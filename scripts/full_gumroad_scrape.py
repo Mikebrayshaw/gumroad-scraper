@@ -65,7 +65,9 @@ async def _scrape_with_retry(
         except Exception as exc:  # noqa: BLE001 - workflow resilience
             print(f"Scrape failed for {url}: {exc}")
             if attempt == 0:
-                print("Waiting 5 minutes before retrying failed scrape...")
+                print(
+                    f"Waiting {FAILURE_COOLDOWN_SECONDS // 60} minutes before retrying failed scrape..."
+                )
                 await asyncio.sleep(FAILURE_COOLDOWN_SECONDS)
             else:
                 print("Retry failed; skipping this scrape.")
@@ -116,7 +118,7 @@ async def run() -> None:
             if sub_index < len(subcategories):
                 await _wait_with_jitter(
                     SUBCATEGORY_DELAY_SECONDS,
-                    "Waiting 30 seconds before next subcategory...",
+                    f"Waiting {SUBCATEGORY_DELAY_SECONDS} seconds before next subcategory...",
                 )
 
         category_csv = output_dir / f"{category.slug}.csv"
@@ -125,7 +127,7 @@ async def run() -> None:
         if category_index < len(categories):
             await _wait_with_jitter(
                 CATEGORY_DELAY_SECONDS,
-                "Waiting 60 seconds before next category...",
+                f"Waiting {CATEGORY_DELAY_SECONDS} seconds before next category...",
             )
 
     master_csv = output_dir / "gumroad_full.csv"
