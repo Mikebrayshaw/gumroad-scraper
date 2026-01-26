@@ -40,11 +40,11 @@ async def _wait_with_jitter(seconds: int, label: str) -> None:
 
 
 def _merge_product(existing: Product | None, incoming: Product) -> Product:
-    if existing is None:
-        return incoming
-    if not existing.subcategory and incoming.subcategory:
-        existing.subcategory = incoming.subcategory
-    return existing
+    if existing is None or existing.subcategory or not incoming.subcategory:
+        return existing or incoming
+    data = asdict(existing)
+    data["subcategory"] = incoming.subcategory
+    return Product(**data)
 
 
 async def _scrape_with_retry(
