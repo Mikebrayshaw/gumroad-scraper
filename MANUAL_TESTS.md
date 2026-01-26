@@ -10,7 +10,7 @@ Follow these steps after launching the Streamlit app (`streamlit run app.py`) to
    - Confirm the first option is `All Subcategories` with the remaining entries indented/bulleted (e.g., `• Icons`, `• Templates`, `• Fonts`, etc.).
 3. **URL generation**
    - Pick any category/subcategory combo (e.g., "Programming & Tech" → "AI & Machine Learning").
-   - Click **Scrape** and watch the terminal logs: the scraper should request a URL shaped like `https://gumroad.com/discover?category=programming-and-tech&subcategory=ai-and-machine-learning`.
+   - Click **Scrape** and watch the terminal logs: the scraper should request a URL shaped like `https://gumroad.com/software-development/ai-and-machine-learning`.
 4. **State reset**
    - Switch to another category (e.g., "Audio") and confirm the subcategory resets to `All Subcategories` without persisting the previous choice.
 5. **End-to-end scrape**

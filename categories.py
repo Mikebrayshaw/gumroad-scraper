@@ -285,13 +285,20 @@ CATEGORY_TREE: Tuple[Category, ...] = (
 CATEGORY_BY_LABEL: Dict[str, Category] = {cat.label: cat for cat in CATEGORY_TREE}
 CATEGORY_BY_SLUG: Dict[str, Category] = {cat.slug: cat for cat in CATEGORY_TREE}
 
+CATEGORY_SLUG_ALIASES: Dict[str, str] = {
+    "programming-and-tech": "software-development",
+    "software": "software-development",
+}
+
 
 def build_discover_url(category_slug: str, subcategory_slug: str | None = None) -> str:
     """Construct a Gumroad discover URL for the given category and subcategory."""
-    params = {"category": category_slug}
+    resolved_slug = CATEGORY_SLUG_ALIASES.get(category_slug, category_slug)
+    if not resolved_slug:
+        return "https://gumroad.com/discover"
     if subcategory_slug:
-        params["subcategory"] = subcategory_slug
-    return f"https://gumroad.com/discover?{urlencode(params)}"
+        return f"https://gumroad.com/{resolved_slug}/{subcategory_slug}"
+    return f"https://gumroad.com/{resolved_slug}"
 
 
 def category_url_map() -> Dict[str, str]:

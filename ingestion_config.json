@@ -4,7 +4,7 @@
     {
       "name": "design-daily",
       "platform": "gumroad",
-      "category_url": "https://gumroad.com/discover?category=design",
+      "category_url": "https://gumroad.com/design",
       "max_products": 150,
       "get_detailed_ratings": true,
       "schedule": "daily"
@@ -21,7 +21,7 @@
     {
       "name": "productivity-daily",
       "platform": "gumroad",
-      "category_url": "https://gumroad.com/discover?category=productivity",
+      "category_url": "https://gumroad.com/productivity",
       "max_products": 100,
       "get_detailed_ratings": true,
       "schedule": "daily"
