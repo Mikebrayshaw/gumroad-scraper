@@ -216,8 +216,8 @@ CATEGORY_TREE: Tuple[Category, ...] = (
         ),
     ),
     Category(
-        label="Programming & Tech",
-        slug="programming-and-tech",
+        label="Software Development",
+        slug="software-development",
         subcategories=(
             Subcategory("All Subcategories", ""),
             Subcategory("Web Development", "web-development"),
@@ -293,9 +293,9 @@ CATEGORY_SLUG_ALIASES: Dict[str, str] = {
 
 def build_discover_url(category_slug: str, subcategory_slug: str | None = None) -> str:
     """Construct a Gumroad discover URL for the given category and subcategory."""
-    resolved_slug = CATEGORY_SLUG_ALIASES.get(category_slug, category_slug)
-    if not resolved_slug:
+    if not category_slug:
         return "https://gumroad.com/discover"
+    resolved_slug = CATEGORY_SLUG_ALIASES.get(category_slug, category_slug)
     if subcategory_slug:
         return f"https://gumroad.com/{resolved_slug}/{subcategory_slug}"
     return f"https://gumroad.com/{resolved_slug}"
