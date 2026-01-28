@@ -6,7 +6,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import random
+import urllib.request
+import urllib.error
+import json
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +26,37 @@ CATEGORY_DELAY_SECONDS = 60
 SUBCATEGORY_DELAY_SECONDS = 30
 FAILURE_COOLDOWN_SECONDS = 300
 SECONDS_PER_MINUTE = 60
+
+
+def send_completion_notification(total_products: int, total_categories: int, errors: int) -> None:
+    """Log completion and optionally send webhook notification."""
+    # Always log to console with clear banner
+    print("\n" + "=" * 60)
+    print("🎉 SCRAPE COMPLETE 🎉")
+    print("=" * 60)
+    print(f"  Total products: {total_products:,}")
+    print(f"  Categories:     {total_categories}")
+    print(f"  Errors:         {errors}")
+    print(f"  Completed at:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60 + "\n")
+
+    # Optional webhook notification (set SCRAPE_WEBHOOK_URL in .env)
+    webhook_url = os.environ.get("SCRAPE_WEBHOOK_URL")
+    if webhook_url:
+        try:
+            payload = {
+                "text": f"🎉 Gumroad scrape complete!\n• {total_products:,} products\n• {total_categories} categories\n• {errors} errors"
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                webhook_url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=10)
+            print("Webhook notification sent!")
+        except urllib.error.URLError as e:
+            print(f"Webhook failed: {e}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -165,6 +200,10 @@ async def scrape_all_categories(
         # Wait between categories to avoid rate limiting (critical!)
         if idx < total_categories - 1:
             await _wait_with_jitter(CATEGORY_DELAY_SECONDS, f"Waiting before next category")
+
+    # Send completion notification
+    errors = len([c for c in category_results if c["status"] == "error"])
+    send_completion_notification(total_products, total_categories, errors)
 
     return {
         "total_categories": total_categories,
