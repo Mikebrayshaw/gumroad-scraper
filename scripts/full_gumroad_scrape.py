@@ -162,6 +162,10 @@ async def scrape_all_categories(
                 "error": str(e),
             })
 
+        # Wait between categories to avoid rate limiting (critical!)
+        if idx < total_categories - 1:
+            await _wait_with_jitter(CATEGORY_DELAY_SECONDS, f"Waiting before next category")
+
     return {
         "total_categories": total_categories,
         "total_products": total_products,
