@@ -670,7 +670,7 @@ async def scrape_discover_page(
     get_detailed_ratings: bool = True,
     rate_limit_ms: int = 500,
     show_progress: bool = False,
-) -> list[Product]:
+) -> tuple[list[Product], dict | None]:
     """
     Scrape products from a Gumroad discover/category page.
 
@@ -681,7 +681,7 @@ async def scrape_discover_page(
         rate_limit_ms: Delay between product page requests in milliseconds
 
     Returns:
-        List of Product objects
+        Tuple of (products list, debug_info dict)
     """
     products = []
     seen_urls = set()
@@ -725,7 +725,11 @@ async def scrape_discover_page(
         if response and response.status in [404, 410]:
             print(f"[WARN] Invalid route detected: {category_url} returned {response.status}")
             await browser.close()
-            raise InvalidRouteError(f"URL returned {response.status}: {category_url}")
+            return [], {
+                "invalid_route": True,
+                "url": category_url,
+                "status": response.status,
+            }
         
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
@@ -745,7 +749,11 @@ async def scrape_discover_page(
                     if "not found" in page_title.lower() or "404" in page_title.lower():
                         print(f"[WARN] Invalid route detected: {category_url} shows 'Page not found' content")
                         await browser.close()
-                        raise InvalidRouteError(f"URL shows 'Page not found' content: {category_url}")
+                        return [], {
+                            "invalid_route": True,
+                            "url": category_url,
+                            "reason": "page_not_found",
+                        }
                 except Exception:
                     pass
         except Exception as e:
@@ -802,7 +810,7 @@ async def scrape_discover_page(
                     print("🚨 Detected possible CAPTCHA/block - aborting this category")
                     progress.close()
                     await browser.close()
-                    return products  # Return empty list
+                    return products, None  # Return empty list
 
             current_card_count = len(product_cards)
             print(f"Found {current_card_count} product cards on page (scraped: {len(products)}/{max_products})...")
@@ -1074,7 +1082,7 @@ async def scrape_discover_page(
 
         progress.close()
         
-        return products
+        return products, None
     
     # Retry logic for page crash errors
     max_attempts = 2
@@ -1082,8 +1090,8 @@ async def scrape_discover_page(
     async with async_playwright() as p:
         for attempt in range(1, max_attempts + 1):
             try:
-                products = await perform_scrape(p)
-                return products
+                products, debug_info = await perform_scrape(p)
+                return products, debug_info
             except Exception as e:
                 error_msg = str(e).lower()
                 if "page crash" in error_msg and attempt < max_attempts:
@@ -1223,7 +1231,7 @@ async def scrape_category(category: str, args) -> list[Product]:
         )
     print("=" * 60 + "\n")
 
-    products = await scrape_discover_page(
+    products, _debug_info = await scrape_discover_page(
         category_url=url,
         max_products=args.max_products,
         get_detailed_ratings=not args.fast,

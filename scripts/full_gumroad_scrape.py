@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from categories import CATEGORY_TREE, build_discover_url, should_skip_subcategory
-from gumroad_scraper import Product, scrape_discover_page, save_to_csv, InvalidRouteError
+from gumroad_scraper import Product, scrape_discover_page, save_to_csv
 from opportunity_scoring import score_product_dict
 from supabase_utils import SupabasePersistence, SupabaseRunStore, get_supabase_client
 
@@ -144,7 +144,7 @@ async def _scrape_with_retry(
     
     for attempt in range(max_retries):
         try:
-            products = await scrape_discover_page(
+            products, debug_info = await scrape_discover_page(
                 category_url=url,
                 category_slug=category_slug,
                 subcategory_slug=subcategory_slug,
@@ -153,6 +153,11 @@ async def _scrape_with_retry(
                 rate_limit_ms=500,
                 show_progress=False,
             )
+
+            if debug_info and debug_info.get("invalid_route"):
+                print(f"[WARN] Invalid route detected for {url}: {debug_info}")
+                delay_config.record_invalid_route()
+                return [], debug_info
             
             # Check if we got zero products (possible block)
             if len(products) == 0:
@@ -164,12 +169,6 @@ async def _scrape_with_retry(
             delay_config.record_success()
             return products, None
         
-        except InvalidRouteError as exc:
-            # Invalid route - do NOT retry, do NOT increase delays
-            print(f"[WARN] Invalid route detected for {url}: {exc}")
-            delay_config.record_invalid_route()
-            return [], {"invalid_route": True, "url": url, "error": str(exc)}
-            
         except Exception as exc:
             delay_config.record_failure()
             # Cap exponential backoff to prevent excessive wait times (max 30 minutes)
@@ -238,7 +237,7 @@ async def scrape_all_categories(
 
             url = build_discover_url(category_slug, "")
 
-            products = await scrape_discover_page(
+            products, debug_info = await scrape_discover_page(
                 category_url=url,
                 category_slug=category_slug,
                 subcategory_slug="",
@@ -246,6 +245,8 @@ async def scrape_all_categories(
                 get_detailed_ratings=not fast_mode,
                 rate_limit_ms=rate_limit_ms,
             )
+            if debug_info and debug_info.get("invalid_route"):
+                print(f"[WARN] Invalid route for {url}: {debug_info}")
 
             # Score products
             product_dicts = [asdict(p) for p in products]
