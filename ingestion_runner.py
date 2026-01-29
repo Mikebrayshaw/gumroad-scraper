@@ -226,7 +226,7 @@ async def run_job(
     args: argparse.Namespace,
     default_rate_limit_ms: int,
     persistence: Optional[SupabasePersistence],
-):
+) -> Tuple[List[Product], Optional[dict]]:
     crawled_at = datetime.utcnow()
     max_products = args.max_products or job.get("max_products", 100)
     rate_limit_ms = args.rate_limit or job.get("rate_limit_ms", default_rate_limit_ms)
@@ -245,15 +245,16 @@ async def run_job(
     print(f"Detailed ratings: {'yes' if get_details else 'no'}")
     print("=" * 80)
 
-    products, debug_info = await scraper(
+    result = await scraper(
         category_url=url,
         max_products=max_products,
         get_detailed_ratings=get_details,
         rate_limit_ms=rate_limit_ms,
     )
-    if debug_info:
-        print("Scraper debug info:")
-        print(debug_info)
+    if isinstance(result, tuple) and len(result) == 2:
+        products, debug_info = result
+    else:
+        products, debug_info = result, None
 
     csv_path = None
     if args.save_csv_dir:
@@ -284,6 +285,8 @@ async def run_job(
     if supabase_summary:
         print("Supabase summary:")
         print(supabase_summary)
+
+    return products, debug_info
 
 
 def main():

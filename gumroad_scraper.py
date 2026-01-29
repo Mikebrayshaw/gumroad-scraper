@@ -28,11 +28,6 @@ from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, cate
 from models import estimate_revenue
 
 
-class InvalidRouteError(Exception):
-    """Exception raised when a route returns 404 or 'Page not found'."""
-    pass
-
-
 @dataclass
 class Product:
     """Data class for Gumroad product information."""
