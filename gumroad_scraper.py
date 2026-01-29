@@ -533,7 +533,8 @@ async def get_product_details(
     for attempt in range(max_retries):
         try:
             await page.goto(product_url, wait_until='domcontentloaded', timeout=20000)
-            await page.wait_for_load_state('networkidle')
+            await page.wait_for_load_state("domcontentloaded")
+
             await page.wait_for_timeout(2000)  # Wait for dynamic content
 
             # Get all visible text on the page
@@ -983,7 +984,8 @@ async def scrape_discover_page(
 
             # Wait for any network requests to complete
             try:
-                await page.wait_for_load_state('networkidle', timeout=5000)
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+
             except:
                 pass  # Continue even if timeout
 
