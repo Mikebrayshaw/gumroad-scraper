@@ -20,6 +20,7 @@ from categories import CATEGORY_TREE, build_discover_url, should_skip_subcategor
 from gumroad_scraper import Product, scrape_discover_page, save_to_csv
 from opportunity_scoring import score_product_dict
 from supabase_utils import SupabasePersistence, SupabaseRunStore, get_supabase_client
+from utils.progress import ProgressTracker
 
 MAX_PRODUCTS = 50
 CATEGORY_DELAY_SECONDS = 60
@@ -192,7 +193,8 @@ async def scrape_all_categories(
     max_per_category: int = 100,
     rate_limit_ms: int = 500,
     fast_mode: bool = False,
-    progress_callback: Optional[Callable[[str, int, int, int], None]] = None,
+    progress_callback: Optional[Callable[[dict], None]] = None,
+    run_id: str | None = None,
 ) -> dict:
     """
     Scrape all Gumroad categories and save to Supabase.
@@ -203,7 +205,8 @@ async def scrape_all_categories(
         max_per_category: Max products to scrape per category
         rate_limit_ms: Delay between requests
         fast_mode: Skip detailed product pages if True
-        progress_callback: Optional callback(category_label, current_idx, total_categories, products_so_far)
+        progress_callback: Optional callback(snapshot)
+        run_id: Optional run identifier for progress tracking persistence
 
     Returns:
         Summary dict with totals
@@ -217,13 +220,12 @@ async def scrape_all_categories(
     total_categories = len(CATEGORY_TREE)
     total_products = 0
     category_results = []
+    progress_run_id = run_id or datetime.utcnow().strftime("full_scrape_%Y%m%d_%H%M%S")
+    tracker = ProgressTracker(run_id=progress_run_id, planned_total=total_categories)
 
     for idx, category in enumerate(CATEGORY_TREE):
         category_label = category.label
         category_slug = category.slug
-
-        if progress_callback:
-            progress_callback(category_label, idx, total_categories, total_products)
 
         try:
             # Start a run for this category
@@ -266,7 +268,6 @@ async def scrape_all_categories(
                 "products": len(products),
                 "status": "success",
             })
-
         except Exception as e:
             category_results.append({
                 "category": category_label,
@@ -275,6 +276,21 @@ async def scrape_all_categories(
                 "status": "error",
                 "error": str(e),
             })
+            debug_info = {"error": str(e)}
+            products = []
+
+        snapshot = tracker.update(
+            category=category_slug,
+            subcategory=None,
+            products_delta=len(products),
+            invalid_route=bool(debug_info and debug_info.get("invalid_route")),
+            zero_products=bool(debug_info and debug_info.get("zero_products")),
+            captcha_suspected=bool(debug_info and debug_info.get("possible_captcha")),
+            error=bool(debug_info and debug_info.get("error")),
+        )
+        print(tracker.format_line(snapshot))
+        if progress_callback:
+            progress_callback(snapshot)
 
         # Wait between categories to avoid rate limiting (critical!)
         if idx < total_categories - 1:
@@ -287,6 +303,7 @@ async def scrape_all_categories(
     return {
         "total_categories": total_categories,
         "total_products": total_products,
+        "run_id": progress_run_id,
         "completed_at": datetime.utcnow().isoformat(),
         "categories": category_results,
     }
@@ -306,6 +323,11 @@ async def run() -> None:
     invalid_route_count = 0
     all_products: dict[str, Product] = {}
     delay_config = AdaptiveDelayConfig()
+    planned_total = sum(len(category.subcategories) for category in categories)
+    tracker = ProgressTracker(
+        run_id=datetime.utcnow().strftime("full_scrape_cli_%Y%m%d_%H%M%S"),
+        planned_total=planned_total,
+    )
 
     for category_index, category in enumerate(categories, start=1):
         print(f"Starting category: {category.label} ({category_index} of {len(categories)})")
@@ -322,7 +344,13 @@ async def run() -> None:
                     f"Skipping subcategory: {sub_label} ({sub_index} of {len(subcategories)}) "
                     f"for {category.label} - marked as skip_scraping"
                 )
-                invalid_route_count += 1
+                snapshot = tracker.update(
+                    category=category.slug,
+                    subcategory=sub_slug,
+                    products_delta=0,
+                    completed_increment=1,
+                )
+                print(tracker.format_line(snapshot))
                 continue
             
             print(
@@ -341,6 +369,17 @@ async def run() -> None:
             if debug_info and debug_info.get("invalid_route"):
                 print(f"[WARN] Invalid route for {url}, skipping retries")
                 invalid_route_count += 1
+                snapshot = tracker.update(
+                    category=category.slug,
+                    subcategory=sub_slug,
+                    products_delta=0,
+                    completed_increment=1,
+                    invalid_route=True,
+                    zero_products=bool(debug_info.get("zero_products")),
+                    captcha_suspected=bool(debug_info.get("possible_captcha")),
+                    error=bool(debug_info.get("error")),
+                )
+                print(tracker.format_line(snapshot))
                 # Don't delay for invalid routes - move to next immediately
                 continue
             
@@ -357,6 +396,18 @@ async def run() -> None:
                     all_products.get(product.product_url),
                     product,
                 )
+
+            snapshot = tracker.update(
+                category=category.slug,
+                subcategory=sub_slug,
+                products_delta=len(products),
+                completed_increment=1,
+                invalid_route=bool(debug_info and debug_info.get("invalid_route")),
+                zero_products=bool(debug_info and debug_info.get("zero_products")),
+                captcha_suspected=bool(debug_info and debug_info.get("possible_captcha")),
+                error=bool(debug_info and debug_info.get("error")),
+            )
+            print(tracker.format_line(snapshot))
 
             if sub_index < len(subcategories):
                 delay_seconds = delay_config.get_subcategory_delay()

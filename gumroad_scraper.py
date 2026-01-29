@@ -26,6 +26,7 @@ from tqdm import tqdm
 
 from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, category_url_map
 from models import estimate_revenue
+from utils.progress import ProgressTracker
 
 
 class InvalidRouteError(Exception):
@@ -806,11 +807,12 @@ async def scrape_discover_page(
             # If this is the first attempt and no cards found, capture debug info
             if not product_cards and scroll_attempts == 0:
                 debug_info = await capture_debug_info(page, main_category, "no_products_on_load")
+                debug_info["zero_products"] = True
                 if debug_info.get("possible_captcha"):
                     print("🚨 Detected possible CAPTCHA/block - aborting this category")
                     progress.close()
                     await browser.close()
-                    return products, None  # Return empty list
+                    return products, debug_info  # Return empty list
 
             current_card_count = len(product_cards)
             print(f"Found {current_card_count} product cards on page (scraped: {len(products)}/{max_products})...")
@@ -1214,8 +1216,8 @@ Available categories:
     return args
 
 
-async def scrape_category(category: str, args) -> list[Product]:
-    """Scrape a single category and return products."""
+async def scrape_category(category: str, args) -> tuple[list[Product], dict | None]:
+    """Scrape a single category and return products plus debug info."""
     url = build_discover_url(category, args.subcategory)
 
     print("=" * 60)
@@ -1231,7 +1233,7 @@ async def scrape_category(category: str, args) -> list[Product]:
         )
     print("=" * 60 + "\n")
 
-    products, _debug_info = await scrape_discover_page(
+    products, debug_info = await scrape_discover_page(
         category_url=url,
         max_products=args.max_products,
         get_detailed_ratings=not args.fast,
@@ -1239,12 +1241,13 @@ async def scrape_category(category: str, args) -> list[Product]:
         show_progress=not args.no_progress,
     )
 
-    return products
+    return products, debug_info
 
 
 async def main():
     """Main entry point."""
     args = parse_args()
+    run_id = datetime.now().strftime("gumroad_cli_%Y%m%d_%H%M%S")
 
     all_products = []
 
@@ -1252,16 +1255,38 @@ async def main():
         # Scrape all categories
         categories = [c for c in CATEGORY_URLS.keys() if c != 'discover']
         print(f"Scraping {len(categories)} categories...\n")
+        tracker = ProgressTracker(run_id=run_id, planned_total=len(categories))
 
         for category in categories:
-            products = await scrape_category(category, args)
+            products, debug_info = await scrape_category(category, args)
             all_products.extend(products)
             print(f"\nCompleted {category}: {len(products)} products\n")
+            snapshot = tracker.update(
+                category=category,
+                subcategory=args.subcategory,
+                products_delta=len(products),
+                invalid_route=bool(debug_info and debug_info.get("invalid_route")),
+                zero_products=bool(debug_info and debug_info.get("zero_products")),
+                captcha_suspected=bool(debug_info and debug_info.get("possible_captcha")),
+                error=bool(debug_info and debug_info.get("error")),
+            )
+            print(tracker.format_line(snapshot))
 
     else:
         # Scrape single category
-        products = await scrape_category(args.category, args)
+        tracker = ProgressTracker(run_id=run_id, planned_total=1)
+        products, debug_info = await scrape_category(args.category, args)
         all_products.extend(products)
+        snapshot = tracker.update(
+            category=args.category,
+            subcategory=args.subcategory,
+            products_delta=len(products),
+            invalid_route=bool(debug_info and debug_info.get("invalid_route")),
+            zero_products=bool(debug_info and debug_info.get("zero_products")),
+            captcha_suspected=bool(debug_info and debug_info.get("possible_captcha")),
+            error=bool(debug_info and debug_info.get("error")),
+        )
+        print(tracker.format_line(snapshot))
 
     # Save to CSV
     if args.output:
