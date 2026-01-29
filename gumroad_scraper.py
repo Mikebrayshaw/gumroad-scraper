@@ -29,11 +29,6 @@ from models import estimate_revenue
 from utils.progress import ProgressTracker
 
 
-class InvalidRouteError(Exception):
-    """Exception raised when a route returns 404 or 'Page not found'."""
-    pass
-
-
 @dataclass
 class Product:
     """Data class for Gumroad product information."""
@@ -718,6 +713,7 @@ async def scrape_discover_page(
     # Inner function containing the main scraping logic
     async def perform_scrape(p):
         browser, context, page = await setup_browser_and_page(p)
+        debug_info = None
 
         print(f"Navigating to {category_url}...")
         response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
@@ -812,7 +808,7 @@ async def scrape_discover_page(
                     print("🚨 Detected possible CAPTCHA/block - aborting this category")
                     progress.close()
                     await browser.close()
-                    return products, debug_info  # Return empty list
+                    return products, debug_info  # Return empty list with debug info
 
             current_card_count = len(product_cards)
             print(f"Found {current_card_count} product cards on page (scraped: {len(products)}/{max_products})...")
@@ -1084,7 +1080,7 @@ async def scrape_discover_page(
 
         progress.close()
         
-        return products, None
+        return products, debug_info
     
     # Retry logic for page crash errors
     max_attempts = 2

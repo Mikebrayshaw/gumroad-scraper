@@ -4,24 +4,30 @@ Platform registry and dispatcher for scraping different marketplaces.
 This module keeps a lightweight mapping of platform slugs to scraper
 callables so ingestion jobs can target different sites (e.g., Gumroad
 and Whop) without changing the runner logic. Scrapers should share a
-compatible signature to keep cross-platform orchestration simple.
+compatible signature and return a tuple of products and optional
+debug metadata to keep cross-platform orchestration simple.
 """
 from collections.abc import Awaitable, Callable
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from gumroad_scraper import Product, scrape_discover_page
 from whop_scraper import scrape_whop_search
 
-ScraperFn = Callable[..., Awaitable[List[Product]]]
+ScraperFn = Callable[..., Awaitable[Tuple[List[Product], Optional[dict]]]]
+
+
+async def _wrap_whop_scraper(*args, **kwargs) -> Tuple[List[Product], Optional[dict]]:
+    products = await scrape_whop_search(*args, **kwargs)
+    return products, None
 
 _SCRAPERS: Dict[str, ScraperFn] = {
     "gumroad": scrape_discover_page,
-    "whop": scrape_whop_search,
+    "whop": _wrap_whop_scraper,
 }
 
 
 def register_scraper(platform: str, scraper: ScraperFn) -> None:
-    """Register or override a scraper for a platform slug."""
+    """Register or override a scraper returning (products, debug_info)."""
     _SCRAPERS[platform] = scraper
 
 
