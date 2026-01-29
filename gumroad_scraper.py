@@ -680,9 +680,10 @@ async def scrape_discover_page(
     """
     products = []
     seen_urls = set()
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+    
+    # Helper function to setup browser, context, and page with request interception
+    async def setup_browser_and_page(p):
+        browser = await p.chromium.launch(headless=True, args=["--disable-gpu"])
         
         # Configure proxy and user agent rotation
         proxy_config = get_proxy_config()
@@ -696,6 +697,21 @@ async def scrape_discover_page(
         
         context = await browser.new_context(**context_options)
         page = await context.new_page()
+
+        # Block resource-heavy requests to reduce memory usage and prevent crashes
+        async def block_resources(route):
+            if route.request.resource_type in ("image", "media", "font"):
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await page.route("**/*", block_resources)
+        
+        return browser, context, page
+    
+    # Inner function containing the main scraping logic
+    async def perform_scrape(p):
+        browser, context, page = await setup_browser_and_page(p)
 
         print(f"Navigating to {category_url}...")
         await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
@@ -1017,6 +1033,32 @@ async def scrape_discover_page(
         await browser.close()
 
         progress.close()
+        
+        return products
+    
+    # Retry logic for page crash errors
+    max_attempts = 2
+    last_error = None
+    
+    async with async_playwright() as p:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                products = await perform_scrape(p)
+                return products
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "page crash" in error_msg and attempt < max_attempts:
+                    print(f"⚠️ Page crashed (attempt {attempt}/{max_attempts}), retrying...")
+                    last_error = e
+                    # Cleanup is handled by perform_scrape closing the browser
+                    continue
+                else:
+                    # Either not a page crash error, or we're out of retries
+                    raise
+        
+        # If we exhausted retries, raise the last error
+        if last_error:
+            raise last_error
 
     return products
 
