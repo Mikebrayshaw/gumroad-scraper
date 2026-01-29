@@ -19,7 +19,7 @@ from typing import Callable, Optional
 from categories import CATEGORY_TREE, build_discover_url
 from gumroad_scraper import Product, scrape_discover_page, save_to_csv
 from opportunity_scoring import score_product_dict
-from supabase_utils import SupabaseRunStore, get_supabase_client
+from supabase_utils import SupabasePersistence, SupabaseRunStore, get_supabase_client
 
 MAX_PRODUCTS = 50
 CATEGORY_DELAY_SECONDS = 60
@@ -273,6 +273,23 @@ async def run() -> None:
     master_csv = output_dir / "gumroad_full.csv"
     save_to_csv(list(all_products.values()), str(master_csv))
     print(f"Completed: {total_scraped} total products scraped")
+
+    products = list(all_products.values())
+    supabase_client = get_supabase_client()
+    persistence = SupabasePersistence(supabase_client)
+    run_store = SupabaseRunStore(supabase_client)
+    run_id = run_store.start_run(
+        category="all",
+        subcategory="",
+        max_products=MAX_PRODUCTS,
+        fast_mode=False,
+        rate_limit_ms=0,
+    )
+    upsert_totals = persistence.upsert_products(run_id, products)
+    print(f"Supabase upsert results: {upsert_totals}")
+    scored_products = [score_product_dict(asdict(product)) for product in products]
+    snapshot_totals = run_store.record_snapshots(run_id, products, scored_products)
+    run_store.complete_run(run_id, totals={"total": len(products), **snapshot_totals})
 
 
 if __name__ == "__main__":
