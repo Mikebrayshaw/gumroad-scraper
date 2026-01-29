@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import urlencode
 
 
@@ -10,6 +10,10 @@ from urllib.parse import urlencode
 class Subcategory:
     label: str
     slug: str
+    path_suffix: Optional[str] = None
+    query_params: Optional[Dict[str, str]] = None
+    absolute_url: Optional[str] = None
+    skip_scraping: bool = False
 
 
 @dataclass(frozen=True)
@@ -25,12 +29,12 @@ CATEGORY_TREE: Tuple[Category, ...] = (
         slug="3d",
         subcategories=(
             Subcategory("All Subcategories", ""),
-            Subcategory("Assets", "assets"),
-            Subcategory("Characters", "characters"),
-            Subcategory("Environments", "environments"),
-            Subcategory("Materials & Textures", "materials-and-textures"),
-            Subcategory("Models", "models"),
-            Subcategory("Props", "props"),
+            Subcategory("Assets", "assets", skip_scraping=True),
+            Subcategory("Characters", "characters", skip_scraping=True),
+            Subcategory("Environments", "environments", skip_scraping=True),
+            Subcategory("Materials & Textures", "materials-and-textures", skip_scraping=True),
+            Subcategory("Models", "models", skip_scraping=True),
+            Subcategory("Props", "props", skip_scraping=True),
         ),
     ),
     Category(
@@ -38,11 +42,11 @@ CATEGORY_TREE: Tuple[Category, ...] = (
         slug="audio",
         subcategories=(
             Subcategory("All Subcategories", ""),
-            Subcategory("Beats", "beats"),
-            Subcategory("Loops & Samples", "loops-and-samples"),
-            Subcategory("Mixing & Mastering", "mixing-and-mastering"),
-            Subcategory("Sound Effects", "sound-effects"),
-            Subcategory("Vocal Presets", "vocal-presets"),
+            Subcategory("Beats", "beats", skip_scraping=True),
+            Subcategory("Loops & Samples", "loops-and-samples", skip_scraping=True),
+            Subcategory("Mixing & Mastering", "mixing-and-mastering", skip_scraping=True),
+            Subcategory("Sound Effects", "sound-effects", skip_scraping=True),
+            Subcategory("Vocal Presets", "vocal-presets", skip_scraping=True),
         ),
     ),
     Category(
@@ -290,15 +294,105 @@ CATEGORY_SLUG_ALIASES: Dict[str, str] = {
     "software": "software-development",
 }
 
+# Known invalid URL patterns that return 404 on Gumroad
+INVALID_PATH_PATTERNS = [
+    "/3d/assets",
+    "/3d/characters",
+    "/3d/environments",
+    "/3d/materials-and-textures",
+    "/3d/models",
+    "/3d/props",
+    "/audio/beats",
+    "/audio/loops-and-samples",
+    "/audio/mixing-and-mastering",
+    "/audio/sound-effects",
+    "/audio/vocal-presets",
+]
 
-def build_discover_url(category_slug: str, subcategory_slug: str | None = None) -> str:
-    """Construct a Gumroad discover URL for the given category and subcategory."""
+
+def validate_url(url: str) -> bool:
+    """Check if a URL is valid (not in known invalid patterns)."""
+    for pattern in INVALID_PATH_PATTERNS:
+        if pattern in url:
+            return False
+    return True
+
+
+def should_skip_subcategory(subcategory: Subcategory) -> bool:
+    """Check if a subcategory should be skipped during scraping."""
+    return subcategory.skip_scraping
+
+
+def build_discover_url(
+    category_slug: str,
+    subcategory_slug: str | None = None,
+    subcategory: Subcategory | None = None,
+) -> str:
+    """Construct a Gumroad discover URL for the given category and subcategory.
+    
+    Args:
+        category_slug: The category slug
+        subcategory_slug: Optional subcategory slug (for backwards compatibility)
+        subcategory: Optional Subcategory object with routing information
+        
+    Returns:
+        A valid Gumroad discover URL
+        
+    Routing priority:
+        1. subcategory.absolute_url - use exact URL if provided
+        2. subcategory.query_params - construct URL with query parameters
+        3. subcategory.path_suffix - use as path segment
+        4. subcategory_slug or subcategory.slug - traditional path-based routing
+        5. category_slug only - fallback to category-only URL
+    """
     if not category_slug:
         return "https://gumroad.com/discover"
+    
     resolved_slug = CATEGORY_SLUG_ALIASES.get(category_slug, category_slug)
+    base_url = f"https://gumroad.com/{resolved_slug}"
+    
+    # If subcategory object is provided, use its routing information
+    if subcategory:
+        # Priority 1: absolute_url overrides everything
+        if subcategory.absolute_url:
+            return subcategory.absolute_url
+        
+        # Priority 2: query_params
+        if subcategory.query_params:
+            query_string = urlencode(subcategory.query_params)
+            return f"{base_url}?{query_string}"
+        
+        # Priority 3: path_suffix
+        if subcategory.path_suffix:
+            url = f"{base_url}/{subcategory.path_suffix}"
+            # Validate before returning
+            if validate_url(url):
+                return url
+            else:
+                # Fall back to category-only URL if invalid
+                return base_url
+        
+        # Priority 4: use subcategory.slug
+        if subcategory.slug:
+            url = f"{base_url}/{subcategory.slug}"
+            # Validate before returning
+            if validate_url(url):
+                return url
+            else:
+                # Fall back to category-only URL if invalid
+                return base_url
+    
+    # Legacy path: subcategory_slug parameter
     if subcategory_slug:
-        return f"https://gumroad.com/{resolved_slug}/{subcategory_slug}"
-    return f"https://gumroad.com/{resolved_slug}"
+        url = f"{base_url}/{subcategory_slug}"
+        # Validate before returning
+        if validate_url(url):
+            return url
+        else:
+            # Fall back to category-only URL if invalid
+            return base_url
+    
+    return base_url
 
 
 def category_url_map() -> Dict[str, str]:
@@ -317,3 +411,22 @@ def build_search_url(query: str) -> str:
 def get_all_category_slugs() -> list[str]:
     """Return a list of all category slugs (excluding 'discover')."""
     return [cat.slug for cat in CATEGORY_TREE]
+
+
+# Sanity checks: Validate URLs at module import time
+def _run_sanity_checks():
+    """Run validation checks on CATEGORY_TREE at module import."""
+    for category in CATEGORY_TREE:
+        for subcategory in category.subcategories:
+            # Skip validation for subcategories marked as skip_scraping
+            if subcategory.skip_scraping:
+                continue
+            
+            # Check that URLs constructed are valid
+            if subcategory.slug:
+                url = build_discover_url(category.slug, subcategory_slug=subcategory.slug)
+                if not validate_url(url):
+                    print(f"[WARN] Invalid URL pattern detected but not marked for skipping: {url}")
+
+
+_run_sanity_checks()

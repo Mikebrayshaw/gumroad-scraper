@@ -28,6 +28,11 @@ from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, cate
 from models import estimate_revenue
 
 
+class InvalidRouteError(Exception):
+    """Exception raised when a route returns 404 or 'Page not found'."""
+    pass
+
+
 @dataclass
 class Product:
     """Data class for Gumroad product information."""
@@ -714,7 +719,38 @@ async def scrape_discover_page(
         browser, context, page = await setup_browser_and_page(p)
 
         print(f"Navigating to {category_url}...")
-        await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
+        response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
+        
+        # Check for 404 or 410 status codes
+        if response and response.status in [404, 410]:
+            print(f"[WARN] Invalid route detected: {category_url} returned {response.status}")
+            await browser.close()
+            raise InvalidRouteError(f"URL returned {response.status}: {category_url}")
+        
+        # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
+        try:
+            page_text = await page.inner_text("body")
+            page_not_found_indicators = [
+                "page not found",
+                "404",
+                "not found",
+                "this page doesn't exist",
+                "couldn't find that page",
+            ]
+            if any(indicator in page_text.lower() for indicator in page_not_found_indicators):
+                # Check if it's a genuine 404 page (not just product descriptions containing these words)
+                # Look for title or heading indicators
+                try:
+                    page_title = await page.title()
+                    if "not found" in page_title.lower() or "404" in page_title.lower():
+                        print(f"[WARN] Invalid route detected: {category_url} shows 'Page not found' content")
+                        await browser.close()
+                        raise InvalidRouteError(f"URL shows 'Page not found' content: {category_url}")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[DEBUG] Could not check for 'Page not found' indicators: {e}")
+        
         await page.wait_for_timeout(3000)
 
         # Ensure product cards have rendered before scraping
