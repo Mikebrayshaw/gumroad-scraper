@@ -138,6 +138,9 @@ async def scrape_all_categories(
         Summary dict with totals
     """
     client = get_supabase_client()
+    print(f"🔍 DEBUG: Supabase client = {client}")
+    print(f"🔍 DEBUG: SUPABASE_URL = {os.getenv('SUPABASE_URL', 'NOT SET')[:20]}...")
+    print(f"🔍 DEBUG: SERVICE_ROLE_KEY present = {bool(os.getenv('SUPABASE_SERVICE_ROLE_KEY'))}")
     run_store = SupabaseRunStore(client)
 
     total_categories = len(CATEGORY_TREE)
