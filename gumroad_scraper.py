@@ -8,9 +8,11 @@ import asyncio
 import csv
 import re
 import json
+import os
 import random
 from datetime import datetime
 from dataclasses import dataclass, asdict, field
+from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import (
@@ -71,6 +73,104 @@ CURRENCY_TO_USD = {
     'INR': 0.012,
     '₹': 0.012,
 }
+
+# User agents for rotation to avoid detection
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+]
+
+
+def get_random_user_agent() -> str:
+    """Get a random user agent string."""
+    return random.choice(USER_AGENTS)
+
+
+def get_proxy_config() -> dict | None:
+    """Get proxy configuration from environment variables."""
+    proxy_url = os.environ.get("SCRAPER_PROXY_URL")
+    if not proxy_url:
+        return None
+    
+    config = {"server": proxy_url}
+    
+    proxy_user = os.environ.get("SCRAPER_PROXY_USER")
+    proxy_pass = os.environ.get("SCRAPER_PROXY_PASS")
+    
+    # Warn if only one credential is provided
+    if (proxy_user and not proxy_pass) or (proxy_pass and not proxy_user):
+        print("⚠️ Warning: Only one proxy credential (user or pass) is set. Both are required for authentication.")
+    
+    if proxy_user and proxy_pass:
+        config["username"] = proxy_user
+        config["password"] = proxy_pass
+    
+    return config
+
+
+async def capture_debug_info(page: Page, category_slug: str, reason: str) -> dict:
+    """Capture debug information when scraping fails."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    debug_dir = Path("debug_screenshots")
+    debug_dir.mkdir(exist_ok=True)
+    
+    # Sanitize category slug for filesystem safety
+    safe_category_slug = re.sub(r'[^\w\-]', '_', category_slug)
+    
+    info = {
+        "timestamp": timestamp,
+        "category": category_slug,
+        "reason": reason,
+        "page_title": "unknown",
+        "page_url": page.url,
+    }
+    
+    # Get page title with error handling
+    try:
+        info["page_title"] = await page.title()
+    except Exception as e:
+        print(f"Could not get page title: {e}")
+    
+    # Take screenshot with error handling
+    try:
+        screenshot_path = debug_dir / f"{safe_category_slug}_{timestamp}.png"
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        info["screenshot"] = str(screenshot_path)
+        print(f"⚠️ Debug screenshot captured: {screenshot_path}")
+    except Exception as e:
+        print(f"Could not capture screenshot: {e}")
+        info["screenshot"] = None
+    
+    # Save HTML with error handling
+    try:
+        html_path = debug_dir / f"{safe_category_slug}_{timestamp}.html"
+        html_content = await page.content()
+        html_path.write_text(html_content)
+        info["html"] = str(html_path)
+    except Exception as e:
+        print(f"Could not save HTML: {e}")
+        info["html"] = None
+    
+    # Check for CAPTCHA indicators with error handling
+    try:
+        captcha_indicators = [
+            "captcha", "challenge", "verify you're human", "robot",
+            "cloudflare", "access denied", "blocked", "rate limit"
+        ]
+        page_text = await page.inner_text("body")
+        info["possible_captcha"] = any(ind in page_text.lower() for ind in captcha_indicators)
+        
+        if info["possible_captcha"]:
+            print(f"🚨 CAPTCHA/BLOCK DETECTED! Page title: {info['page_title']}")
+    except Exception as e:
+        print(f"Could not check for CAPTCHA indicators: {e}")
+        info["possible_captcha"] = False
+
+    
+    return info
 
 
 def is_valid_product_url(url: str | None) -> bool:
@@ -582,10 +682,18 @@ async def scrape_discover_page(
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
+        
+        # Configure proxy and user agent rotation
+        proxy_config = get_proxy_config()
+        context_options = {
+            'viewport': {'width': 1920, 'height': 1080},
+            'user_agent': get_random_user_agent()
+        }
+        if proxy_config:
+            context_options['proxy'] = proxy_config
+            print(f"Using proxy: {proxy_config['server']}")
+        
+        context = await browser.new_context(**context_options)
         page = await context.new_page()
 
         print(f"Navigating to {category_url}...")
@@ -633,6 +741,14 @@ async def scrape_discover_page(
             if not product_cards:
                 print("No product cards found, trying alternative selectors...")
                 product_cards = await page.query_selector_all('[class*="product-card"], a[href*="/l/"]')
+
+            # If this is the first attempt and no cards found, capture debug info
+            if not product_cards and scroll_attempts == 0:
+                debug_info = await capture_debug_info(page, main_category, "no_products_on_load")
+                if debug_info.get("possible_captcha"):
+                    print("🚨 Detected possible CAPTCHA/block - aborting this category")
+                    await browser.close()
+                    return products  # Return empty list
 
             current_card_count = len(product_cards)
             print(f"Found {current_card_count} product cards on page (scraped: {len(products)}/{max_products})...")
