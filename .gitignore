@@ -30,3 +30,6 @@ Thumbs.db
 # Playwright
 gumroad_screenshot.png
 gumroad_page.html
+
+# Debug screenshots
+debug_screenshots/

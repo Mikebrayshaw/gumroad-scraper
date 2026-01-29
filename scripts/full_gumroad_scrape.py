@@ -28,6 +28,38 @@ FAILURE_COOLDOWN_SECONDS = 300
 SECONDS_PER_MINUTE = 60
 
 
+class AdaptiveDelayConfig:
+    """Adaptive delay configuration that increases on failures."""
+    def __init__(self):
+        self.base_category_delay = 60
+        self.base_subcategory_delay = 30
+        self.failure_cooldown = 300
+        self.consecutive_failures = 0
+        self.max_multiplier = 4
+    
+    def record_success(self):
+        """Reset failure counter on success."""
+        self.consecutive_failures = max(0, self.consecutive_failures - 1)
+    
+    def record_failure(self):
+        """Increase delays after failure."""
+        self.consecutive_failures += 1
+    
+    @property
+    def multiplier(self) -> float:
+        """Get delay multiplier based on consecutive failures."""
+        return min(1 + (self.consecutive_failures * 0.5), self.max_multiplier)
+    
+    def get_category_delay(self) -> int:
+        return int(self.base_category_delay * self.multiplier)
+    
+    def get_subcategory_delay(self) -> int:
+        return int(self.base_subcategory_delay * self.multiplier)
+    
+    def get_failure_cooldown(self) -> int:
+        return int(self.failure_cooldown * self.multiplier)
+
+
 def send_completion_notification(total_products: int, total_categories: int, errors: int) -> None:
     """Log completion and optionally send webhook notification."""
     # Always log to console with clear banner
@@ -94,10 +126,19 @@ async def _scrape_with_retry(
     category_slug: str,
     subcategory_slug: str | None,
     url: str,
-) -> list[Product]:
-    for attempt in range(2):
+    delay_config: AdaptiveDelayConfig,
+    max_retries: int = 3,
+) -> tuple[list[Product], dict | None]:
+    """Scrape with exponential backoff retry logic.
+    
+    Returns:
+        Tuple of (products list, debug_info dict if failure occurred)
+    """
+    debug_info = None
+    
+    for attempt in range(max_retries):
         try:
-            return await scrape_discover_page(
+            products = await scrape_discover_page(
                 category_url=url,
                 category_slug=category_slug,
                 subcategory_slug=subcategory_slug,
@@ -106,15 +147,33 @@ async def _scrape_with_retry(
                 rate_limit_ms=500,
                 show_progress=False,
             )
-        except Exception as exc:  # noqa: BLE001 - workflow resilience
-            print(f"Scrape failed for {url}: {exc}")
-            if attempt == 0:
-                minutes = FAILURE_COOLDOWN_SECONDS // SECONDS_PER_MINUTE
-                print(f"Waiting {minutes} minutes before retrying failed scrape...")
-                await asyncio.sleep(FAILURE_COOLDOWN_SECONDS)
+            
+            # Check if we got zero products (possible block)
+            if len(products) == 0:
+                print(f"⚠️ Zero products returned for {url} - possible rate limit/block")
+                delay_config.record_failure()
+                # Don't immediately retry - let the main loop handle delay
+                return products, {"zero_products": True, "url": url}
+            
+            delay_config.record_success()
+            return products, None
+            
+        except Exception as exc:
+            delay_config.record_failure()
+            backoff_time = delay_config.get_failure_cooldown() * (2 ** attempt)
+            
+            print(f"❌ Scrape failed for {url}: {exc}")
+            print(f"   Attempt {attempt + 1}/{max_retries}")
+            print(f"   Consecutive failures: {delay_config.consecutive_failures}")
+            
+            if attempt < max_retries - 1:
+                print(f"   Waiting {backoff_time}s before retry (exponential backoff)...")
+                await asyncio.sleep(backoff_time)
             else:
-                print("Retry failed; skipping this scrape.")
-    return []
+                print("   Max retries reached; skipping this scrape.")
+                return [], {"error": str(exc), "url": url}
+    
+    return [], None
 
 
 async def scrape_all_categories(
@@ -231,6 +290,7 @@ async def run() -> None:
 
     total_scraped = 0
     all_products: dict[str, Product] = {}
+    delay_config = AdaptiveDelayConfig()
 
     for category_index, category in enumerate(categories, start=1):
         print(f"Starting category: {category.label} ({category_index} of {len(categories)})")
@@ -245,11 +305,16 @@ async def run() -> None:
                 f"for {category.label}"
             )
             url = build_discover_url(category.slug, sub_slug)
-            products = await _scrape_with_retry(
+            products, debug_info = await _scrape_with_retry(
                 category_slug=category.slug,
                 subcategory_slug=sub_slug,
                 url=url,
+                delay_config=delay_config,
             )
+            
+            if debug_info:
+                print(f"⚠️ Debug info for {url}: {debug_info}")
+            
             total_scraped += len(products)
             for product in products:
                 category_products[product.product_url] = _merge_product(
@@ -262,8 +327,9 @@ async def run() -> None:
                 )
 
             if sub_index < len(subcategories):
+                delay_seconds = delay_config.get_subcategory_delay()
                 await _wait_with_jitter(
-                    SUBCATEGORY_DELAY_SECONDS,
+                    delay_seconds,
                     "Waiting before next subcategory",
                 )
 
@@ -271,8 +337,9 @@ async def run() -> None:
         save_to_csv(list(category_products.values()), str(category_csv))
 
         if category_index < len(categories):
+            delay_seconds = delay_config.get_category_delay()
             await _wait_with_jitter(
-                CATEGORY_DELAY_SECONDS,
+                delay_seconds,
                 "Waiting before next category",
             )
 
