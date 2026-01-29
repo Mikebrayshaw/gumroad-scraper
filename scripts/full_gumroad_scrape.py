@@ -16,8 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from categories import CATEGORY_TREE, build_discover_url
-from gumroad_scraper import Product, scrape_discover_page, save_to_csv
+from categories import CATEGORY_TREE, build_discover_url, should_skip_subcategory
+from gumroad_scraper import Product, scrape_discover_page, save_to_csv, InvalidRouteError
 from opportunity_scoring import score_product_dict
 from supabase_utils import SupabasePersistence, SupabaseRunStore, get_supabase_client
 
@@ -45,6 +45,11 @@ class AdaptiveDelayConfig:
         """Increase delays after failure."""
         self.consecutive_failures += 1
     
+    def record_invalid_route(self):
+        """Record an invalid route - does NOT increase delay multipliers."""
+        # Invalid routes are not rate-limiting issues, so don't penalize
+        pass
+    
     @property
     def multiplier(self) -> float:
         """Get delay multiplier based on consecutive failures."""
@@ -60,7 +65,7 @@ class AdaptiveDelayConfig:
         return int(self.failure_cooldown * self.multiplier)
 
 
-def send_completion_notification(total_products: int, total_categories: int, errors: int) -> None:
+def send_completion_notification(total_products: int, total_categories: int, errors: int, invalid_routes: int = 0) -> None:
     """Log completion and optionally send webhook notification."""
     # Always log to console with clear banner
     print("\n" + "=" * 60)
@@ -69,6 +74,7 @@ def send_completion_notification(total_products: int, total_categories: int, err
     print(f"  Total products: {total_products:,}")
     print(f"  Categories:     {total_categories}")
     print(f"  Errors:         {errors}")
+    print(f"  Invalid routes: {invalid_routes}")
     print(f"  Completed at:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60 + "\n")
 
@@ -77,7 +83,7 @@ def send_completion_notification(total_products: int, total_categories: int, err
     if webhook_url:
         try:
             payload = {
-                "text": f"[SUCCESS] Gumroad scrape complete!\n• {total_products:,} products\n• {total_categories} categories\n• {errors} errors"
+                "text": f"[SUCCESS] Gumroad scrape complete!\n• {total_products:,} products\n• {total_categories} categories\n• {errors} errors\n• {invalid_routes} invalid routes"
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
@@ -157,6 +163,12 @@ async def _scrape_with_retry(
             
             delay_config.record_success()
             return products, None
+        
+        except InvalidRouteError as exc:
+            # Invalid route - do NOT retry, do NOT increase delays
+            print(f"[WARN] Invalid route detected for {url}: {exc}")
+            delay_config.record_invalid_route()
+            return [], {"invalid_route": True, "url": url, "error": str(exc)}
             
         except Exception as exc:
             delay_config.record_failure()
@@ -269,7 +281,7 @@ async def scrape_all_categories(
 
     # Send completion notification
     errors = len([c for c in category_results if c["status"] == "error"])
-    send_completion_notification(total_products, total_categories, errors)
+    send_completion_notification(total_products, total_categories, errors, invalid_routes=0)
 
     return {
         "total_categories": total_categories,
@@ -290,6 +302,7 @@ async def run() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     total_scraped = 0
+    invalid_route_count = 0
     all_products: dict[str, Product] = {}
     delay_config = AdaptiveDelayConfig()
 
@@ -301,17 +314,34 @@ async def run() -> None:
         for sub_index, subcategory in enumerate(subcategories, start=1):
             sub_slug = subcategory.slug or None
             sub_label = subcategory.label
+            
+            # Check if subcategory should be skipped
+            if should_skip_subcategory(subcategory):
+                print(
+                    f"Skipping subcategory: {sub_label} ({sub_index} of {len(subcategories)}) "
+                    f"for {category.label} - marked as skip_scraping"
+                )
+                invalid_route_count += 1
+                continue
+            
             print(
                 f"Starting subcategory: {sub_label} ({sub_index} of {len(subcategories)}) "
                 f"for {category.label}"
             )
-            url = build_discover_url(category.slug, sub_slug)
+            url = build_discover_url(category.slug, subcategory_slug=sub_slug, subcategory=subcategory)
             products, debug_info = await _scrape_with_retry(
                 category_slug=category.slug,
                 subcategory_slug=sub_slug,
                 url=url,
                 delay_config=delay_config,
             )
+            
+            # Check for invalid route in debug_info
+            if debug_info and debug_info.get("invalid_route"):
+                print(f"[WARN] Invalid route for {url}, skipping retries")
+                invalid_route_count += 1
+                # Don't delay for invalid routes - move to next immediately
+                continue
             
             if debug_info:
                 print(f"[WARN] Debug info for {url}: {debug_info}")
@@ -347,6 +377,7 @@ async def run() -> None:
     master_csv = output_dir / "gumroad_full.csv"
     save_to_csv(list(all_products.values()), str(master_csv))
     print(f"Completed: {total_scraped} total products scraped")
+    print(f"Invalid routes encountered: {invalid_route_count}")
 
     products = list(all_products.values())
     supabase_client = get_supabase_client()
