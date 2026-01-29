@@ -102,7 +102,7 @@ def get_proxy_config() -> dict | None:
     
     # Warn if only one credential is provided
     if (proxy_user and not proxy_pass) or (proxy_pass and not proxy_user):
-        print("⚠️ Warning: Only one proxy credential (user or pass) is set. Both are required for authentication.")
+        print("[WARN] Only one proxy credential (user or pass) is set. Both are required for authentication.")
     
     if proxy_user and proxy_pass:
         config["username"] = proxy_user
@@ -139,7 +139,7 @@ async def capture_debug_info(page: Page, category_slug: str, reason: str) -> dic
         screenshot_path = debug_dir / f"{safe_category_slug}_{timestamp}.png"
         await page.screenshot(path=str(screenshot_path), full_page=True)
         info["screenshot"] = str(screenshot_path)
-        print(f"⚠️ Debug screenshot captured: {screenshot_path}")
+        print(f"[DEBUG] Debug screenshot captured: {screenshot_path}")
     except Exception as e:
         print(f"Could not capture screenshot: {e}")
         info["screenshot"] = None
@@ -697,7 +697,7 @@ async def scrape_discover_page(
         page = await context.new_page()
 
         print(f"Navigating to {category_url}...")
-        await page.goto(category_url, wait_until='networkidle', timeout=30000)
+        await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
         await page.wait_for_timeout(3000)
 
         # Ensure product cards have rendered before scraping

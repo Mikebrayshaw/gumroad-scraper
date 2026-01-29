@@ -64,7 +64,7 @@ def send_completion_notification(total_products: int, total_categories: int, err
     """Log completion and optionally send webhook notification."""
     # Always log to console with clear banner
     print("\n" + "=" * 60)
-    print("🎉 SCRAPE COMPLETE 🎉")
+    print("[SUCCESS] SCRAPE COMPLETE [SUCCESS]")
     print("=" * 60)
     print(f"  Total products: {total_products:,}")
     print(f"  Categories:     {total_categories}")
@@ -77,7 +77,7 @@ def send_completion_notification(total_products: int, total_categories: int, err
     if webhook_url:
         try:
             payload = {
-                "text": f"🎉 Gumroad scrape complete!\n• {total_products:,} products\n• {total_categories} categories\n• {errors} errors"
+                "text": f"[SUCCESS] Gumroad scrape complete!\n• {total_products:,} products\n• {total_categories} categories\n• {errors} errors"
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
@@ -150,7 +150,7 @@ async def _scrape_with_retry(
             
             # Check if we got zero products (possible block)
             if len(products) == 0:
-                print(f"⚠️ Zero products returned for {url} - possible rate limit/block")
+                print(f"[WARN] Zero products returned for {url} - possible rate limit/block")
                 delay_config.record_failure()
                 # Don't immediately retry - let the main loop handle delay
                 return products, {"zero_products": True, "url": url}
@@ -163,7 +163,7 @@ async def _scrape_with_retry(
             # Cap exponential backoff to prevent excessive wait times (max 30 minutes)
             backoff_time = min(delay_config.get_failure_cooldown() * (2 ** attempt), 1800)
             
-            print(f"❌ Scrape failed for {url}: {exc}")
+            print(f"[ERROR] Scrape failed for {url}: {exc}")
             print(f"   Attempt {attempt + 1}/{max_retries}")
             print(f"   Consecutive failures: {delay_config.consecutive_failures}")
             
@@ -198,9 +198,9 @@ async def scrape_all_categories(
         Summary dict with totals
     """
     client = get_supabase_client()
-    print(f"🔍 DEBUG: Supabase client = {client}")
-    print(f"🔍 DEBUG: SUPABASE_URL = {os.getenv('SUPABASE_URL', 'NOT SET')[:20]}...")
-    print(f"🔍 DEBUG: SERVICE_ROLE_KEY present = {bool(os.getenv('SUPABASE_SERVICE_ROLE_KEY'))}")
+    print(f"[DEBUG] Supabase client = {client}")
+    print(f"[DEBUG] SUPABASE_URL = {os.getenv('SUPABASE_URL', 'NOT SET')[:20]}...")
+    print(f"[DEBUG] SERVICE_ROLE_KEY present = {bool(os.getenv('SUPABASE_SERVICE_ROLE_KEY'))}")
     run_store = SupabaseRunStore(client)
 
     total_categories = len(CATEGORY_TREE)
@@ -314,7 +314,7 @@ async def run() -> None:
             )
             
             if debug_info:
-                print(f"⚠️ Debug info for {url}: {debug_info}")
+                print(f"[WARN] Debug info for {url}: {debug_info}")
             
             total_scraped += len(products)
             for product in products:
