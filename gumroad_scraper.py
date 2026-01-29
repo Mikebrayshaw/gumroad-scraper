@@ -764,6 +764,7 @@ async def scrape_discover_page(
                 debug_info = await capture_debug_info(page, main_category, "no_products_on_load")
                 if debug_info.get("possible_captcha"):
                     print("🚨 Detected possible CAPTCHA/block - aborting this category")
+                    progress.close()
                     await browser.close()
                     return products  # Return empty list
 
@@ -1030,7 +1031,10 @@ async def scrape_discover_page(
                     )
                     break
 
-        await browser.close()
+        try:
+            await browser.close()
+        except Exception:
+            pass  # Ignore errors during cleanup
 
         progress.close()
         
@@ -1038,7 +1042,6 @@ async def scrape_discover_page(
     
     # Retry logic for page crash errors
     max_attempts = 2
-    last_error = None
     
     async with async_playwright() as p:
         for attempt in range(1, max_attempts + 1):
@@ -1049,18 +1052,11 @@ async def scrape_discover_page(
                 error_msg = str(e).lower()
                 if "page crash" in error_msg and attempt < max_attempts:
                     print(f"⚠️ Page crashed (attempt {attempt}/{max_attempts}), retrying...")
-                    last_error = e
                     # Cleanup is handled by perform_scrape closing the browser
                     continue
                 else:
                     # Either not a page crash error, or we're out of retries
                     raise
-        
-        # If we exhausted retries, raise the last error
-        if last_error:
-            raise last_error
-
-    return products
 
 
 def save_to_csv(products: list[Product], filename: str):
