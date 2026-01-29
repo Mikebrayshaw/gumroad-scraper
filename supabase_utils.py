@@ -21,6 +21,19 @@ from gumroad_scraper import Product
 from models import estimate_revenue
 
 
+def sanitize_for_json(data: dict) -> dict:
+    """Convert non-JSON-serializable types before database insert."""
+    sanitized = {}
+    for key, value in data.items():
+        if isinstance(value, datetime):
+            sanitized[key] = value.isoformat()
+        elif hasattr(value, 'isoformat'):  # Handles pd.Timestamp and similar
+            sanitized[key] = value.isoformat()
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 def _compute_snapshot_hash(snapshot: dict) -> str:
     serializable = snapshot.copy()
     serializable.pop("raw_source_hash", None)
@@ -381,7 +394,7 @@ class SupabasePersistence:
         now = datetime.utcnow().isoformat()
         records = []
         for product in products:
-            payload = asdict(product)
+            payload = sanitize_for_json(asdict(product))
             revenue_estimate, revenue_confidence = estimate_revenue(
                 payload.get("price_usd"),
                 payload.get("sales_count"),
