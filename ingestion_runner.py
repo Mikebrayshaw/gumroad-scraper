@@ -245,12 +245,15 @@ async def run_job(
     print(f"Detailed ratings: {'yes' if get_details else 'no'}")
     print("=" * 80)
 
-    products = await scraper(
+    products, debug_info = await scraper(
         category_url=url,
         max_products=max_products,
         get_detailed_ratings=get_details,
         rate_limit_ms=rate_limit_ms,
     )
+    if debug_info:
+        print("Scraper debug info:")
+        print(debug_info)
 
     csv_path = None
     if args.save_csv_dir:
