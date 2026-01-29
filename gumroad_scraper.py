@@ -73,6 +73,20 @@ CURRENCY_TO_USD = {
 }
 
 
+def is_valid_product_url(url: str) -> bool:
+    """Check if URL is a valid product page, not a wishlist or other non-product page."""
+    if not url:
+        return False
+    invalid_patterns = [
+        '/wishlists/',
+        '/followers',
+        '/following',
+        '/posts/',
+        '/subscribe',
+    ]
+    return not any(pattern in url.lower() for pattern in invalid_patterns)
+
+
 async def extract_product_name(card: ElementHandle, product_url: str) -> str:
     """Extract a product name from a product card element.
 
@@ -211,6 +225,10 @@ def parse_rating(rating_str: str) -> tuple[Optional[float], int]:
     if primary_match:
         rating = float(primary_match.group(1))
         count = int(primary_match.group(2))
+        # Validate rating is in valid range (0-5)
+        if rating < 0 or rating > 5:
+            # Invalid rating - likely parsed wrong element, return None
+            return None, count
         return rating, count
 
     # Pattern: "4.8(123)" or "4.8 (123)" or "4.8(123 ratings)"
@@ -218,12 +236,21 @@ def parse_rating(rating_str: str) -> tuple[Optional[float], int]:
     if match:
         rating = float(match.group(1))
         count = int(match.group(2))
+        # Validate rating is in valid range (0-5)
+        if rating < 0 or rating > 5:
+            # Invalid rating - likely parsed wrong element, return None
+            return None, count
         return rating, count
 
     # Just rating without count
     match = re.search(r'([\d.]+)', rating_str)
     if match:
-        return float(match.group(1)), 0
+        rating = float(match.group(1))
+        # Validate rating is in valid range (0-5)
+        if rating < 0 or rating > 5:
+            # Invalid rating - likely parsed wrong element, return None
+            return None, 0
+        return rating, 0
 
     return None, 0
 
@@ -331,6 +358,45 @@ def compute_mixed_review_stats(
     return mixed_count, mixed_percent
 
 
+def extract_sales_from_page(page_source: str) -> int | None:
+    """Extract sales_count from page, checking multiple sources."""
+    
+    # Pattern 1: Visible text like "28,133 sales" or "1.2K sales"
+    patterns = [
+        r'([\d,]+)\s*sales',
+        r'([\d.]+)\s*([KkMm])\s*sales',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, page_source, re.IGNORECASE)
+        if match:
+            groups = match.groups()
+            if len(groups) == 1:
+                return int(groups[0].replace(',', ''))
+            elif len(groups) == 2:
+                value = float(groups[0])
+                multiplier = groups[1].upper()
+                if multiplier == 'K':
+                    value *= 1000
+                elif multiplier == 'M':
+                    value *= 1000000
+                return int(value)
+    
+    # Pattern 2: Check for JSON embedded data
+    json_patterns = [
+        r'"sales_count"\s*:\s*(\d+)',
+        r'"salesCount"\s*:\s*(\d+)',
+        r'"sales"\s*:\s*(\d+)',
+    ]
+    
+    for pattern in json_patterns:
+        match = re.search(pattern, page_source)
+        if match:
+            return int(match.group(1))
+    
+    return None
+
+
 async def get_product_details(
     page: Page,
     product_url: str,
@@ -392,22 +458,13 @@ async def get_product_details(
                         continue
             details["description"] = description
 
-            # Find sales count - look for pattern like "28,133 sales" or "1.2K sales"
-            sales_match = re.search(r'([\d,]+)\s*sales', body_text, re.IGNORECASE)
-            if sales_match:
-                sales_str = sales_match.group(1).replace(',', '')
-                details['sales_count'] = int(sales_str)
-            else:
-                # Try K/M suffix patterns
-                sales_match = re.search(r'([\d.]+)\s*([KkMm])\s*sales', body_text, re.IGNORECASE)
-                if sales_match:
-                    value = float(sales_match.group(1))
-                    multiplier = sales_match.group(2).upper()
-                    if multiplier == 'K':
-                        value *= 1000
-                    elif multiplier == 'M':
-                        value *= 1000000
-                    details['sales_count'] = int(value)
+            # Get page source for enhanced sales extraction
+            page_source = await page.content()
+            
+            # Find sales count using enhanced extraction
+            sales_count = extract_sales_from_page(page_source)
+            if sales_count is not None:
+                details['sales_count'] = sales_count
 
             # Try to find a reliable total reviews count on the detail page
             total_reviews_match = re.search(r'(\d+[\d,]*)\s*(?:reviews|ratings)', body_text, re.IGNORECASE)
@@ -586,6 +643,10 @@ async def scrape_discover_page(
                     if product_url.startswith('/'):
                         product_url = f'https://gumroad.com{product_url}'
 
+                    # Skip non-product URLs (wishlists, follower pages, etc.)
+                    if not is_valid_product_url(product_url):
+                        continue
+
                     # Skip if already scraped
                     if product_url in seen_urls:
                         continue
@@ -681,6 +742,7 @@ async def scrape_discover_page(
                         if footer:
                             footer_text = await footer.inner_text()
                             rating_guess, total_guess = parse_rating(footer_text)
+                            # Only use if valid (parse_rating now validates 0-5 range)
                             if rating_guess is not None:
                                 average_rating = rating_guess
                                 total_reviews = total_guess or total_reviews
