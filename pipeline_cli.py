@@ -62,7 +62,7 @@ def cmd_scrape(args: argparse.Namespace) -> None:
     logger.info("Starting scrape", extra={"run_id": run_id})
     categories = category_url_map()
     target = categories.get(args.category, args.category)
-    products = asyncio.run(
+    products, _debug_info = asyncio.run(
         scrape_discover_page(
             category_url=target,
             max_products=args.max_products,

@@ -232,7 +232,7 @@ def run_scraper(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        products = loop.run_until_complete(
+        products, _debug_info = loop.run_until_complete(
             scrape_discover_page(
                 category_url=url,
                 category_slug=category_slug,
