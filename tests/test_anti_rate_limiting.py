@@ -59,6 +59,30 @@ class TestProxyConfig(unittest.TestCase):
         self.assertEqual(config["server"], "http://proxy.example.com:8080")
         self.assertEqual(config["username"], "testuser")
         self.assertEqual(config["password"], "testpass")
+    
+    def test_proxy_config_partial_credentials(self):
+        """Test proxy config with partial credentials shows warning."""
+        import io
+        import sys
+        
+        os.environ["SCRAPER_PROXY_URL"] = "http://proxy.example.com:8080"
+        os.environ["SCRAPER_PROXY_USER"] = "testuser"
+        # No password set
+        
+        # Capture stdout to check for warning
+        captured_output = io.StringIO()
+        sys.stdout = captured_output
+        
+        config = get_proxy_config()
+        
+        sys.stdout = sys.__stdout__
+        
+        self.assertIsNotNone(config)
+        self.assertEqual(config["server"], "http://proxy.example.com:8080")
+        self.assertNotIn("username", config)
+        self.assertNotIn("password", config)
+        # Check that warning was printed
+        self.assertIn("Warning", captured_output.getvalue())
 
 
 class TestAdaptiveDelayConfig(unittest.TestCase):

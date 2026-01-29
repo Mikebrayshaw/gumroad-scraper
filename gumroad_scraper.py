@@ -99,6 +99,11 @@ def get_proxy_config() -> dict | None:
     
     proxy_user = os.environ.get("SCRAPER_PROXY_USER")
     proxy_pass = os.environ.get("SCRAPER_PROXY_PASS")
+    
+    # Warn if only one credential is provided
+    if (proxy_user and not proxy_pass) or (proxy_pass and not proxy_user):
+        print("⚠️ Warning: Only one proxy credential (user or pass) is set. Both are required for authentication.")
+    
     if proxy_user and proxy_pass:
         config["username"] = proxy_user
         config["password"] = proxy_pass
@@ -112,36 +117,58 @@ async def capture_debug_info(page: Page, category_slug: str, reason: str) -> dic
     debug_dir = Path("debug_screenshots")
     debug_dir.mkdir(exist_ok=True)
     
+    # Sanitize category slug for filesystem safety
+    safe_category_slug = re.sub(r'[^\w\-]', '_', category_slug)
+    
     info = {
         "timestamp": timestamp,
         "category": category_slug,
         "reason": reason,
-        "page_title": await page.title(),
+        "page_title": "unknown",
         "page_url": page.url,
     }
     
-    # Take screenshot
-    screenshot_path = debug_dir / f"{category_slug}_{timestamp}.png"
-    await page.screenshot(path=str(screenshot_path), full_page=True)
-    info["screenshot"] = str(screenshot_path)
+    # Get page title with error handling
+    try:
+        info["page_title"] = await page.title()
+    except Exception as e:
+        print(f"Could not get page title: {e}")
     
-    # Save HTML
-    html_path = debug_dir / f"{category_slug}_{timestamp}.html"
-    html_content = await page.content()
-    html_path.write_text(html_content)
-    info["html"] = str(html_path)
+    # Take screenshot with error handling
+    try:
+        screenshot_path = debug_dir / f"{safe_category_slug}_{timestamp}.png"
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        info["screenshot"] = str(screenshot_path)
+        print(f"⚠️ Debug screenshot captured: {screenshot_path}")
+    except Exception as e:
+        print(f"Could not capture screenshot: {e}")
+        info["screenshot"] = None
     
-    # Check for CAPTCHA indicators
-    captcha_indicators = [
-        "captcha", "challenge", "verify you're human", "robot",
-        "cloudflare", "access denied", "blocked", "rate limit"
-    ]
-    page_text = await page.inner_text("body")
-    info["possible_captcha"] = any(ind in page_text.lower() for ind in captcha_indicators)
+    # Save HTML with error handling
+    try:
+        html_path = debug_dir / f"{safe_category_slug}_{timestamp}.html"
+        html_content = await page.content()
+        html_path.write_text(html_content)
+        info["html"] = str(html_path)
+    except Exception as e:
+        print(f"Could not save HTML: {e}")
+        info["html"] = None
     
-    print(f"⚠️ Debug info captured: {screenshot_path}")
-    if info["possible_captcha"]:
-        print(f"🚨 CAPTCHA/BLOCK DETECTED! Page title: {info['page_title']}")
+    # Check for CAPTCHA indicators with error handling
+    try:
+        captcha_indicators = [
+            "captcha", "challenge", "verify you're human", "robot",
+            "cloudflare", "access denied", "blocked", "rate limit"
+        ]
+        page_text = await page.inner_text("body")
+        info["possible_captcha"] = any(ind in page_text.lower() for ind in captcha_indicators)
+        
+        if info["possible_captcha"]:
+            print(f"🚨 CAPTCHA/BLOCK DETECTED! Page title: {info['page_title']}")
+    except Exception as e:
+        print(f"Could not check for CAPTCHA indicators: {e}")
+        info["possible_captcha"] = False
+
     
     return info
 

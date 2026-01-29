@@ -160,14 +160,15 @@ async def _scrape_with_retry(
             
         except Exception as exc:
             delay_config.record_failure()
-            backoff_time = delay_config.get_failure_cooldown() * (2 ** attempt)
+            # Cap exponential backoff to prevent excessive wait times (max 30 minutes)
+            backoff_time = min(delay_config.get_failure_cooldown() * (2 ** attempt), 1800)
             
             print(f"❌ Scrape failed for {url}: {exc}")
             print(f"   Attempt {attempt + 1}/{max_retries}")
             print(f"   Consecutive failures: {delay_config.consecutive_failures}")
             
             if attempt < max_retries - 1:
-                print(f"   Waiting {backoff_time}s before retry (exponential backoff)...")
+                print(f"   Waiting {backoff_time}s before retry (exponential backoff, capped at 30min)...")
                 await asyncio.sleep(backoff_time)
             else:
                 print("   Max retries reached; skipping this scrape.")
