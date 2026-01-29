@@ -280,6 +280,23 @@ async def run() -> None:
     save_to_csv(list(all_products.values()), str(master_csv))
     print(f"Completed: {total_scraped} total products scraped")
 
+    products = list(all_products.values())
+    supabase_client = get_supabase_client()
+    persistence = SupabasePersistence(supabase_client)
+    run_store = SupabaseRunStore(supabase_client)
+    run_id = run_store.start_run(
+        category="all",
+        subcategory="",
+        max_products=MAX_PRODUCTS,
+        fast_mode=False,
+        rate_limit_ms=0,
+    )
+    upsert_totals = persistence.upsert_products(run_id, products)
+    print(f"Supabase upsert results: {upsert_totals}")
+    scored_products = [score_product_dict(asdict(product)) for product in products]
+    snapshot_totals = run_store.record_snapshots(run_id, products, scored_products)
+    run_store.complete_run(run_id, totals={"total": len(products), **snapshot_totals})
+
 
 if __name__ == "__main__":
     asyncio.run(run())
