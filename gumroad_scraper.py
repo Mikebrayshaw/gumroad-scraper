@@ -73,7 +73,7 @@ CURRENCY_TO_USD = {
 }
 
 
-def is_valid_product_url(url: str) -> bool:
+def is_valid_product_url(url: str | None) -> bool:
     """Check if URL is a valid product page, not a wishlist or other non-product page."""
     if not url:
         return False
@@ -359,12 +359,36 @@ def compute_mixed_review_stats(
 
 
 def extract_sales_from_page(page_source: str) -> int | None:
-    """Extract sales_count from page, checking multiple sources."""
+    """Extract sales_count from page HTML source, checking multiple sources.
     
-    # Pattern 1: Visible text like "28,133 sales" or "1.2K sales"
+    Tries multiple extraction strategies in order:
+    1. JSON embedded data (more reliable)
+    2. Visible text patterns like "28,133 sales" or "1.2K sales"
+    
+    Args:
+        page_source: Raw HTML content of the page
+        
+    Returns:
+        Sales count as integer, or None if not found
+    """
+    if not page_source:
+        return None
+    
+    # Pattern 1: Check for JSON embedded data first (more reliable)
+    json_patterns = [
+        r'"sales_count"\s*:\s*(\d+)',
+        r'"salesCount"\s*:\s*(\d+)',
+    ]
+    
+    for pattern in json_patterns:
+        match = re.search(pattern, page_source)
+        if match:
+            return int(match.group(1))
+    
+    # Pattern 2: Visible text like "28,133 sales" or "1.2K sales"
     patterns = [
-        r'([\d,]+)\s*sales',
-        r'([\d.]+)\s*([KkMm])\s*sales',
+        r'\b([\d,]+)\s+sales\b',
+        r'\b([\d.]+)\s*([KkMm])\s+sales\b',
     ]
     
     for pattern in patterns:
@@ -381,18 +405,6 @@ def extract_sales_from_page(page_source: str) -> int | None:
                 elif multiplier == 'M':
                     value *= 1000000
                 return int(value)
-    
-    # Pattern 2: Check for JSON embedded data
-    json_patterns = [
-        r'"sales_count"\s*:\s*(\d+)',
-        r'"salesCount"\s*:\s*(\d+)',
-        r'"sales"\s*:\s*(\d+)',
-    ]
-    
-    for pattern in json_patterns:
-        match = re.search(pattern, page_source)
-        if match:
-            return int(match.group(1))
     
     return None
 
