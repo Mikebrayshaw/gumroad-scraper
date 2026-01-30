@@ -23,6 +23,7 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeout,
     async_playwright,
 )
+from playwright_stealth import stealth_async
 from tqdm import tqdm
 
 from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, category_url_map
@@ -626,7 +627,7 @@ async def get_product_details(
             await page.goto(product_url, wait_until='domcontentloaded', timeout=20000)
             await page.wait_for_load_state("domcontentloaded")
 
-            await page.wait_for_timeout(2000)  # Wait for dynamic content
+            await page.wait_for_timeout(random.randint(2000, 5000))
 
             # Get all visible text on the page
             body_text = await page.inner_text('body')
@@ -809,11 +810,17 @@ async def scrape_discover_page(
         # Configure user agent rotation
         context_options = {
             'viewport': {'width': 1920, 'height': 1080},
-            'user_agent': get_random_user_agent()
+            'user_agent': (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            ),
+            'locale': "en-US",
+            'timezone_id': "America/New_York",
         }
 
         context = await browser.new_context(**context_options)
         page = await context.new_page()
+        await stealth_async(page)
 
         async def maybe_log_ip_check():
             global _DIAG_IP_CHECK_DONE
@@ -854,6 +861,7 @@ async def scrape_discover_page(
 
         print(f"Navigating to {category_url}...")
         response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
+        await page.wait_for_timeout(random.randint(2000, 5000))
         if response is None:
             print(f"[DEBUG] goto status=<none> url={category_url} final={page.url}")
             await context.close()
@@ -1103,6 +1111,7 @@ async def scrape_discover_page(
                         await asyncio.sleep((rate_limit_ms + jitter) / 1000)
 
                         detail_page = await context.new_page()
+                        await stealth_async(detail_page)
                         rating_breakdown = await get_product_details(
                             detail_page,
                             product_url,
