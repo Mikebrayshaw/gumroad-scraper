@@ -727,10 +727,11 @@ async def scrape_discover_page(
 
         print(f"Navigating to {category_url}...")
         response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
-        
+
         # Check for 404 or 410 status codes
         if response and response.status in [404, 410]:
-            print(f"[WARN] Invalid route detected: {category_url} returned {response.status}")
+            print("[WARN] invalid_route")
+            await context.close()
             await browser.close()
             return [], _invalid_route_debug("http_status", response.status)
         
