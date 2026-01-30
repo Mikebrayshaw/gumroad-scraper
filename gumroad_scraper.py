@@ -224,6 +224,46 @@ async def capture_debug_info(page: Page, category_slug: str, reason: str) -> dic
     return info
 
 
+async def capture_invalid_route_artifacts(page: Page, category_slug: str) -> dict:
+    """Capture debug artifacts for invalid route detection."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_category_slug = re.sub(r'[^\w\-]', '_', category_slug)
+    html_dir = Path("debug_html")
+    html_dir.mkdir(exist_ok=True)
+    debug_dir = Path("debug_screenshots")
+    debug_dir.mkdir(exist_ok=True)
+    info = {"timestamp": timestamp}
+
+    try:
+        html_path = html_dir / f"{safe_category_slug}_{timestamp}.html"
+        html_content = await page.content()
+        if len(html_content) > MAX_DEBUG_HTML_CHARS:
+            html_content = (
+                html_content[:MAX_DEBUG_HTML_CHARS]
+                + "\n<!-- Truncated to avoid huge debug files -->"
+            )
+        html_path.write_text(html_content)
+        info["html"] = str(html_path)
+    except Exception as e:
+        print(f"Could not save invalid route HTML: {e}")
+        info["html"] = None
+
+    screenshot_path = debug_dir / f"{safe_category_slug}_{timestamp}.png"
+    if screenshot_path.exists():
+        info["screenshot"] = str(screenshot_path)
+        return info
+
+    try:
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        info["screenshot"] = str(screenshot_path)
+        print(f"[DEBUG] Invalid route screenshot captured: {screenshot_path}")
+    except Exception as e:
+        print(f"Could not capture invalid route screenshot: {e}")
+        info["screenshot"] = None
+
+    return info
+
+
 def is_valid_product_url(url: str | None) -> bool:
     """Check if URL is a valid product page, not a wishlist or other non-product page."""
     if not url:
@@ -732,6 +772,15 @@ async def scrape_discover_page(
     products = []
     seen_urls = set()
 
+    def _resolve_main_category() -> str:
+        category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
+        main_category = category_slug or (category_match.group(1) if category_match else 'discover')
+        if main_category == 'discover':
+            query_match = re.search(r'query=([^&]+)', category_url)
+            if query_match:
+                main_category = query_match.group(1)
+        return main_category
+
     def _invalid_route_debug(reason: str, status: int | None = None) -> dict:
         debug = {
             "invalid_route": True,
@@ -820,6 +869,7 @@ async def scrape_discover_page(
 
         if response is None:
             print("[WARN] invalid_route")
+            artifact_info = await capture_invalid_route_artifacts(page, _resolve_main_category())
             await context.close()
             await browser.close()
             return [], _invalid_route_debug("goto_no_response")
@@ -853,6 +903,7 @@ async def scrape_discover_page(
                 for indicator in page_not_found_indicators
             ):
                 print("[WARN] invalid_route")
+                artifact_info = await capture_invalid_route_artifacts(page, _resolve_main_category())
                 await context.close()
                 await browser.close()
                 return [], _invalid_route_debug("page_not_found_text")
@@ -871,13 +922,7 @@ async def scrape_discover_page(
             print("Warning: Product title selector did not appear before timeout; continuing with best effort.")
 
         # Extract category from URL
-        category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
-        main_category = category_slug or (category_match.group(1) if category_match else 'discover')
-        if main_category == 'discover':
-            # Check for query param
-            query_match = re.search(r'query=([^&]+)', category_url)
-            if query_match:
-                main_category = query_match.group(1)
+        main_category = _resolve_main_category()
 
         selected_subcategory = subcategory_slug or main_category
 
