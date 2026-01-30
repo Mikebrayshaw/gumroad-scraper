@@ -85,6 +85,9 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
 ]
 
+DIAG_IP_CHECK_ENV = "DIAG_IP_CHECK"
+_DIAG_IP_CHECK_DONE = False
+
 
 def get_random_user_agent() -> str:
     """Get a random user agent string."""
@@ -763,6 +766,27 @@ async def scrape_discover_page(
         context = await browser.new_context(**context_options)
         page = await context.new_page()
 
+        async def maybe_log_ip_check():
+            global _DIAG_IP_CHECK_DONE
+            if _DIAG_IP_CHECK_DONE or os.environ.get(DIAG_IP_CHECK_ENV) != "1":
+                return
+            _DIAG_IP_CHECK_DONE = True
+            try:
+                ip_response = await page.goto(
+                    "https://api.ipify.org?format=text",
+                    wait_until="domcontentloaded",
+                    timeout=15000,
+                )
+                if ip_response is None:
+                    print("[DEBUG] Browser egress IP: <unknown>")
+                    return
+                ip_text = (await ip_response.text()).strip()
+                print(f"[DEBUG] Browser egress IP: {ip_text}")
+            except Exception as e:
+                print(f"[DEBUG] Browser egress IP check failed: {e}")
+
+        await maybe_log_ip_check()
+
         # Block resource-heavy requests to reduce memory usage and prevent crashes
         async def block_resources(route):
             if route.request.resource_type in ("image", "media", "font"):
@@ -781,6 +805,18 @@ async def scrape_discover_page(
 
         print(f"Navigating to {category_url}...")
         response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
+        if response is None:
+            print(f"[DEBUG] goto status=<none> url={category_url} final={page.url}")
+            await context.close()
+            await browser.close()
+            return [], {
+                "error": "goto_no_response",
+                "url": category_url,
+            }
+        print(
+            "[DEBUG] goto status="
+            f"{response.status} url={category_url} final={page.url}"
+        )
 
         # Check for 404 or 410 status codes
         if response and response.status in [404, 410]:
