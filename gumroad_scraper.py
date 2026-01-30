@@ -681,6 +681,16 @@ async def scrape_discover_page(
     """
     products = []
     seen_urls = set()
+
+    def _invalid_route_debug(reason: str, status: int | None = None) -> dict:
+        debug = {
+            "invalid_route": True,
+            "url": category_url,
+            "reason": reason,
+        }
+        if status is not None:
+            debug["status"] = status
+        return debug
     
     # Helper function to setup browser, context, and page with request interception
     async def setup_browser_and_page(p):
@@ -722,11 +732,7 @@ async def scrape_discover_page(
         if response and response.status in [404, 410]:
             print(f"[WARN] Invalid route detected: {category_url} returned {response.status}")
             await browser.close()
-            return [], {
-                "invalid_route": True,
-                "url": category_url,
-                "status": response.status,
-            }
+            return [], _invalid_route_debug("http_status", response.status)
         
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
@@ -746,11 +752,9 @@ async def scrape_discover_page(
                     if "not found" in page_title.lower() or "404" in page_title.lower():
                         print(f"[WARN] Invalid route detected: {category_url} shows 'Page not found' content")
                         await browser.close()
-                        return [], {
-                            "invalid_route": True,
-                            "url": category_url,
-                            "reason": "page_not_found",
-                        }
+                        debug_info = _invalid_route_debug("page_not_found")
+                        debug_info["page_title"] = page_title
+                        return [], debug_info
                 except Exception:
                     pass
         except Exception as e:
