@@ -155,7 +155,8 @@ async def _scrape_with_retry(
                 show_progress=False,
             )
 
-            if debug_info and debug_info.get("invalid_route"):
+            invalid_route = bool(debug_info and debug_info.get("invalid_route"))
+            if invalid_route:
                 print(f"[WARN] Invalid route detected for {url}: {debug_info}")
                 delay_config.record_invalid_route()
                 return [], debug_info
