@@ -10,6 +10,7 @@ import re
 import json
 import os
 import random
+from urllib.parse import urlparse
 from datetime import datetime
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -84,7 +85,8 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
 ]
 
-MAX_DEBUG_HTML_CHARS = 1_000_000
+DIAG_IP_CHECK_ENV = "DIAG_IP_CHECK"
+_DIAG_IP_CHECK_DONE = False
 
 
 def get_random_user_agent() -> str:
@@ -92,26 +94,72 @@ def get_random_user_agent() -> str:
     return random.choice(USER_AGENTS)
 
 
-def get_proxy_config() -> dict | None:
-    """Get proxy configuration from environment variables."""
-    proxy_url = os.environ.get("SCRAPER_PROXY_URL")
+def _parse_proxy_url(proxy_url: str) -> dict | None:
+    """Parse a proxy URL into a Playwright proxy config."""
     if not proxy_url:
         return None
-    
-    config = {"server": proxy_url}
-    
-    proxy_user = os.environ.get("SCRAPER_PROXY_USER")
-    proxy_pass = os.environ.get("SCRAPER_PROXY_PASS")
-    
-    # Warn if only one credential is provided
-    if (proxy_user and not proxy_pass) or (proxy_pass and not proxy_user):
-        print("[WARN] Only one proxy credential (user or pass) is set. Both are required for authentication.")
-    
-    if proxy_user and proxy_pass:
-        config["username"] = proxy_user
-        config["password"] = proxy_pass
-    
+
+    parsed = urlparse(proxy_url)
+    if not parsed.scheme and parsed.path:
+        parsed = urlparse(f"http://{proxy_url}")
+
+    if not parsed.hostname:
+        return None
+
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server = f"{server}:{parsed.port}"
+
+    config = {"server": server}
+    if parsed.username and parsed.password:
+        config["username"] = parsed.username
+        config["password"] = parsed.password
+
     return config
+
+
+def _proxy_host_port(server: str | None) -> str | None:
+    """Extract host:port for logging without credentials."""
+    if not server:
+        return None
+    parsed = urlparse(server)
+    if not parsed.scheme and parsed.path:
+        parsed = urlparse(f"http://{server}")
+    if not parsed.hostname:
+        return None
+    host_port = parsed.hostname
+    if parsed.port:
+        host_port = f"{host_port}:{parsed.port}"
+    return host_port
+
+
+def proxy_from_env() -> dict | None:
+    """Get proxy configuration from environment variables."""
+    proxy_server = os.environ.get("PLAYWRIGHT_PROXY_SERVER")
+    if proxy_server:
+        config = {"server": proxy_server}
+        proxy_user = os.environ.get("PLAYWRIGHT_PROXY_USERNAME")
+        proxy_pass = os.environ.get("PLAYWRIGHT_PROXY_PASSWORD")
+        if (proxy_user and not proxy_pass) or (proxy_pass and not proxy_user):
+            print("[WARN] Only one proxy credential (username or password) is set. Both are required for authentication.")
+        if proxy_user and proxy_pass:
+            config["username"] = proxy_user
+            config["password"] = proxy_pass
+        return config
+
+    proxy_url = os.environ.get("PROXY_URL")
+    if proxy_url:
+        return _parse_proxy_url(proxy_url)
+
+    https_proxy = os.environ.get("HTTPS_PROXY")
+    if https_proxy:
+        return _parse_proxy_url(https_proxy)
+
+    http_proxy = os.environ.get("HTTP_PROXY")
+    if http_proxy:
+        return _parse_proxy_url(http_proxy)
+
+    return None
 
 
 async def capture_debug_info(page: Page, category_slug: str, reason: str) -> dict:
@@ -745,20 +793,48 @@ async def scrape_discover_page(
     
     # Helper function to setup browser, context, and page with request interception
     async def setup_browser_and_page(p):
-        browser = await p.chromium.launch(headless=True, args=["--disable-gpu"])
-        
-        # Configure proxy and user agent rotation
-        proxy_config = get_proxy_config()
+        proxy_config = proxy_from_env()
+        launch_options = {
+            "headless": True,
+            "args": ["--disable-gpu", "--no-sandbox"],
+        }
+        if proxy_config:
+            launch_options["proxy"] = proxy_config
+
+        browser = await p.chromium.launch(**launch_options)
+
+        proxy_server = _proxy_host_port(proxy_config["server"]) if proxy_config else None
+        print(f"[DEBUG] Proxy configured: {bool(proxy_config)}, server={proxy_server}")
+
+        # Configure user agent rotation
         context_options = {
             'viewport': {'width': 1920, 'height': 1080},
             'user_agent': get_random_user_agent()
         }
-        if proxy_config:
-            context_options['proxy'] = proxy_config
-            print(f"Using proxy: {proxy_config['server']}")
-        
+
         context = await browser.new_context(**context_options)
         page = await context.new_page()
+
+        async def maybe_log_ip_check():
+            global _DIAG_IP_CHECK_DONE
+            if _DIAG_IP_CHECK_DONE or os.environ.get(DIAG_IP_CHECK_ENV) != "1":
+                return
+            _DIAG_IP_CHECK_DONE = True
+            try:
+                ip_response = await page.goto(
+                    "https://api.ipify.org?format=text",
+                    wait_until="domcontentloaded",
+                    timeout=15000,
+                )
+                if ip_response is None:
+                    print("[DEBUG] Browser egress IP: <unknown>")
+                    return
+                ip_text = (await ip_response.text()).strip()
+                print(f"[DEBUG] Browser egress IP: {ip_text}")
+            except Exception as e:
+                print(f"[DEBUG] Browser egress IP check failed: {e}")
+
+        await maybe_log_ip_check()
 
         # Block resource-heavy requests to reduce memory usage and prevent crashes
         async def block_resources(route):
@@ -778,20 +854,37 @@ async def scrape_discover_page(
 
         print(f"Navigating to {category_url}...")
         response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
+        if response is None:
+            print(f"[DEBUG] goto status=<none> url={category_url} final={page.url}")
+            await context.close()
+            await browser.close()
+            return [], {
+                "error": "goto_no_response",
+                "url": category_url,
+            }
+        print(
+            "[DEBUG] goto status="
+            f"{response.status} url={category_url} final={page.url}"
+        )
 
-        # Check for 404 or 410 status codes
-        if response and response.status in [404, 410]:
+        if response is None:
             print("[WARN] invalid_route")
             artifact_info = await capture_invalid_route_artifacts(page, _resolve_main_category())
             await context.close()
             await browser.close()
-            debug = _invalid_route_debug("http_status", response.status)
-            debug.update(artifact_info)
-            return [], debug
+            return [], _invalid_route_debug("goto_no_response")
+
+        if response.status == 404:
+            print("[WARN] invalid_route")
+            await context.close()
+            await browser.close()
+            return [], _invalid_route_debug("http_404", response.status)
 
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
             page_content = await page.content()
+            page_title = await page.title()
+            body_text = await page.inner_text("body")
             page_not_found_indicators = [
                 "page not found",
                 "404",
@@ -799,14 +892,21 @@ async def scrape_discover_page(
                 "this page doesn't exist",
                 "couldn't find that page",
             ]
-            if any(indicator in page_content.lower() for indicator in page_not_found_indicators):
+            not_found_sources = [
+                page_content.lower(),
+                page_title.lower(),
+                body_text.lower(),
+            ]
+            if any(
+                indicator in source
+                for source in not_found_sources
+                for indicator in page_not_found_indicators
+            ):
                 print("[WARN] invalid_route")
                 artifact_info = await capture_invalid_route_artifacts(page, _resolve_main_category())
                 await context.close()
                 await browser.close()
-                debug = _invalid_route_debug("page_not_found")
-                debug.update(artifact_info)
-                return [], debug
+                return [], _invalid_route_debug("page_not_found_text")
         except Exception as e:
             print(f"[DEBUG] Could not check for 'Page not found' indicators: {e}")
         

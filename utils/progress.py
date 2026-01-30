@@ -129,3 +129,11 @@ def _format_seconds(value: float | None) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def write_status_file(status: dict[str, Any], path: Path | str = Path("status.json")) -> None:
+    output_path = Path(path)
+    output_path.write_text(
+        json.dumps(status, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
