@@ -84,6 +84,8 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
 ]
 
+MAX_DEBUG_HTML_CHARS = 1_000_000
+
 
 def get_random_user_agent() -> str:
     """Get a random user agent string."""
@@ -171,6 +173,46 @@ async def capture_debug_info(page: Page, category_slug: str, reason: str) -> dic
         info["possible_captcha"] = False
 
     
+    return info
+
+
+async def capture_invalid_route_artifacts(page: Page, category_slug: str) -> dict:
+    """Capture debug artifacts for invalid route detection."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_category_slug = re.sub(r'[^\w\-]', '_', category_slug)
+    html_dir = Path("debug_html")
+    html_dir.mkdir(exist_ok=True)
+    debug_dir = Path("debug_screenshots")
+    debug_dir.mkdir(exist_ok=True)
+    info = {"timestamp": timestamp}
+
+    try:
+        html_path = html_dir / f"{safe_category_slug}_{timestamp}.html"
+        html_content = await page.content()
+        if len(html_content) > MAX_DEBUG_HTML_CHARS:
+            html_content = (
+                html_content[:MAX_DEBUG_HTML_CHARS]
+                + "\n<!-- Truncated to avoid huge debug files -->"
+            )
+        html_path.write_text(html_content)
+        info["html"] = str(html_path)
+    except Exception as e:
+        print(f"Could not save invalid route HTML: {e}")
+        info["html"] = None
+
+    screenshot_path = debug_dir / f"{safe_category_slug}_{timestamp}.png"
+    if screenshot_path.exists():
+        info["screenshot"] = str(screenshot_path)
+        return info
+
+    try:
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        info["screenshot"] = str(screenshot_path)
+        print(f"[DEBUG] Invalid route screenshot captured: {screenshot_path}")
+    except Exception as e:
+        print(f"Could not capture invalid route screenshot: {e}")
+        info["screenshot"] = None
+
     return info
 
 
@@ -682,6 +724,15 @@ async def scrape_discover_page(
     products = []
     seen_urls = set()
 
+    def _resolve_main_category() -> str:
+        category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
+        main_category = category_slug or (category_match.group(1) if category_match else 'discover')
+        if main_category == 'discover':
+            query_match = re.search(r'query=([^&]+)', category_url)
+            if query_match:
+                main_category = query_match.group(1)
+        return main_category
+
     def _invalid_route_debug(reason: str, status: int | None = None) -> dict:
         debug = {
             "invalid_route": True,
@@ -731,9 +782,12 @@ async def scrape_discover_page(
         # Check for 404 or 410 status codes
         if response and response.status in [404, 410]:
             print("[WARN] invalid_route")
+            artifact_info = await capture_invalid_route_artifacts(page, _resolve_main_category())
             await context.close()
             await browser.close()
-            return [], _invalid_route_debug("http_status", response.status)
+            debug = _invalid_route_debug("http_status", response.status)
+            debug.update(artifact_info)
+            return [], debug
 
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
@@ -747,9 +801,12 @@ async def scrape_discover_page(
             ]
             if any(indicator in page_content.lower() for indicator in page_not_found_indicators):
                 print("[WARN] invalid_route")
+                artifact_info = await capture_invalid_route_artifacts(page, _resolve_main_category())
                 await context.close()
                 await browser.close()
-                return [], _invalid_route_debug("page_not_found")
+                debug = _invalid_route_debug("page_not_found")
+                debug.update(artifact_info)
+                return [], debug
         except Exception as e:
             print(f"[DEBUG] Could not check for 'Page not found' indicators: {e}")
         
@@ -765,13 +822,7 @@ async def scrape_discover_page(
             print("Warning: Product title selector did not appear before timeout; continuing with best effort.")
 
         # Extract category from URL
-        category_match = re.search(r'gumroad\.com/([^/?]+)', category_url)
-        main_category = category_slug or (category_match.group(1) if category_match else 'discover')
-        if main_category == 'discover':
-            # Check for query param
-            query_match = re.search(r'query=([^&]+)', category_url)
-            if query_match:
-                main_category = query_match.group(1)
+        main_category = _resolve_main_category()
 
         selected_subcategory = subcategory_slug or main_category
 
