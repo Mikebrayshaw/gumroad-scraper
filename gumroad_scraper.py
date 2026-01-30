@@ -734,10 +734,10 @@ async def scrape_discover_page(
             await context.close()
             await browser.close()
             return [], _invalid_route_debug("http_status", response.status)
-        
+
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
-            page_text = await page.inner_text("body")
+            page_content = await page.content()
             page_not_found_indicators = [
                 "page not found",
                 "404",
@@ -745,19 +745,11 @@ async def scrape_discover_page(
                 "this page doesn't exist",
                 "couldn't find that page",
             ]
-            if any(indicator in page_text.lower() for indicator in page_not_found_indicators):
-                # Check if it's a genuine 404 page (not just product descriptions containing these words)
-                # Look for title or heading indicators
-                try:
-                    page_title = await page.title()
-                    if "not found" in page_title.lower() or "404" in page_title.lower():
-                        print(f"[WARN] Invalid route detected: {category_url} shows 'Page not found' content")
-                        await browser.close()
-                        debug_info = _invalid_route_debug("page_not_found")
-                        debug_info["page_title"] = page_title
-                        return [], debug_info
-                except Exception:
-                    pass
+            if any(indicator in page_content.lower() for indicator in page_not_found_indicators):
+                print("[WARN] invalid_route")
+                await context.close()
+                await browser.close()
+                return [], _invalid_route_debug("page_not_found")
         except Exception as e:
             print(f"[DEBUG] Could not check for 'Page not found' indicators: {e}")
         
