@@ -26,11 +26,7 @@ from tqdm import tqdm
 
 from categories import CATEGORY_BY_SLUG, CATEGORY_TREE, build_discover_url, category_url_map
 from models import estimate_revenue
-
-
-class InvalidRouteError(Exception):
-    """Exception raised when a route returns 404 or 'Page not found'."""
-    pass
+from utils.progress import ProgressTracker
 
 
 @dataclass
@@ -670,7 +666,7 @@ async def scrape_discover_page(
     get_detailed_ratings: bool = True,
     rate_limit_ms: int = 500,
     show_progress: bool = False,
-) -> list[Product]:
+) -> tuple[list[Product], dict | None]:
     """
     Scrape products from a Gumroad discover/category page.
 
@@ -681,10 +677,20 @@ async def scrape_discover_page(
         rate_limit_ms: Delay between product page requests in milliseconds
 
     Returns:
-        List of Product objects
+        Tuple of (products list, debug_info dict)
     """
     products = []
     seen_urls = set()
+
+    def _invalid_route_debug(reason: str, status: int | None = None) -> dict:
+        debug = {
+            "invalid_route": True,
+            "url": category_url,
+            "reason": reason,
+        }
+        if status is not None:
+            debug["status"] = status
+        return debug
     
     # Helper function to setup browser, context, and page with request interception
     async def setup_browser_and_page(p):
@@ -717,6 +723,7 @@ async def scrape_discover_page(
     # Inner function containing the main scraping logic
     async def perform_scrape(p):
         browser, context, page = await setup_browser_and_page(p)
+        debug_info = None
 
         print(f"Navigating to {category_url}...")
         response = await page.goto(category_url, wait_until='domcontentloaded', timeout=60000)
@@ -726,16 +733,31 @@ async def scrape_discover_page(
             print("[WARN] invalid_route")
             await context.close()
             await browser.close()
-            return []
-
+            return [], _invalid_route_debug("http_status", response.status)
+        
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
-            page_html = await page.content()
-            if "page not found" in page_html.lower():
-                print("[WARN] invalid_route")
-                await context.close()
-                await browser.close()
-                return []
+            page_text = await page.inner_text("body")
+            page_not_found_indicators = [
+                "page not found",
+                "404",
+                "not found",
+                "this page doesn't exist",
+                "couldn't find that page",
+            ]
+            if any(indicator in page_text.lower() for indicator in page_not_found_indicators):
+                # Check if it's a genuine 404 page (not just product descriptions containing these words)
+                # Look for title or heading indicators
+                try:
+                    page_title = await page.title()
+                    if "not found" in page_title.lower() or "404" in page_title.lower():
+                        print(f"[WARN] Invalid route detected: {category_url} shows 'Page not found' content")
+                        await browser.close()
+                        debug_info = _invalid_route_debug("page_not_found")
+                        debug_info["page_title"] = page_title
+                        return [], debug_info
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[DEBUG] Could not check for 'Page not found' indicators: {e}")
         
@@ -786,11 +808,12 @@ async def scrape_discover_page(
             # If this is the first attempt and no cards found, capture debug info
             if not product_cards and scroll_attempts == 0:
                 debug_info = await capture_debug_info(page, main_category, "no_products_on_load")
+                debug_info["zero_products"] = True
                 if debug_info.get("possible_captcha"):
                     print("🚨 Detected possible CAPTCHA/block - aborting this category")
                     progress.close()
                     await browser.close()
-                    return products  # Return empty list
+                    return products, debug_info  # Return empty list with debug info
 
             current_card_count = len(product_cards)
             print(f"Found {current_card_count} product cards on page (scraped: {len(products)}/{max_products})...")
@@ -1062,7 +1085,7 @@ async def scrape_discover_page(
 
         progress.close()
         
-        return products
+        return products, debug_info
     
     # Retry logic for page crash errors
     max_attempts = 2
@@ -1070,8 +1093,8 @@ async def scrape_discover_page(
     async with async_playwright() as p:
         for attempt in range(1, max_attempts + 1):
             try:
-                products = await perform_scrape(p)
-                return products
+                products, debug_info = await perform_scrape(p)
+                return products, debug_info
             except Exception as e:
                 error_msg = str(e).lower()
                 if "page crash" in error_msg and attempt < max_attempts:
@@ -1194,8 +1217,8 @@ Available categories:
     return args
 
 
-async def scrape_category(category: str, args) -> list[Product]:
-    """Scrape a single category and return products."""
+async def scrape_category(category: str, args) -> tuple[list[Product], dict | None]:
+    """Scrape a single category and return products plus debug info."""
     url = build_discover_url(category, args.subcategory)
 
     print("=" * 60)
@@ -1211,7 +1234,7 @@ async def scrape_category(category: str, args) -> list[Product]:
         )
     print("=" * 60 + "\n")
 
-    products = await scrape_discover_page(
+    products, debug_info = await scrape_discover_page(
         category_url=url,
         max_products=args.max_products,
         get_detailed_ratings=not args.fast,
@@ -1219,12 +1242,13 @@ async def scrape_category(category: str, args) -> list[Product]:
         show_progress=not args.no_progress,
     )
 
-    return products
+    return products, debug_info
 
 
 async def main():
     """Main entry point."""
     args = parse_args()
+    run_id = datetime.now().strftime("gumroad_cli_%Y%m%d_%H%M%S")
 
     all_products = []
 
@@ -1232,16 +1256,38 @@ async def main():
         # Scrape all categories
         categories = [c for c in CATEGORY_URLS.keys() if c != 'discover']
         print(f"Scraping {len(categories)} categories...\n")
+        tracker = ProgressTracker(run_id=run_id, planned_total=len(categories))
 
         for category in categories:
-            products = await scrape_category(category, args)
+            products, debug_info = await scrape_category(category, args)
             all_products.extend(products)
             print(f"\nCompleted {category}: {len(products)} products\n")
+            snapshot = tracker.update(
+                category=category,
+                subcategory=args.subcategory,
+                products_delta=len(products),
+                invalid_route=bool(debug_info and debug_info.get("invalid_route")),
+                zero_products=bool(debug_info and debug_info.get("zero_products")),
+                captcha_suspected=bool(debug_info and debug_info.get("possible_captcha")),
+                error=bool(debug_info and debug_info.get("error")),
+            )
+            print(tracker.format_line(snapshot))
 
     else:
         # Scrape single category
-        products = await scrape_category(args.category, args)
+        tracker = ProgressTracker(run_id=run_id, planned_total=1)
+        products, debug_info = await scrape_category(args.category, args)
         all_products.extend(products)
+        snapshot = tracker.update(
+            category=args.category,
+            subcategory=args.subcategory,
+            products_delta=len(products),
+            invalid_route=bool(debug_info and debug_info.get("invalid_route")),
+            zero_products=bool(debug_info and debug_info.get("zero_products")),
+            captcha_suspected=bool(debug_info and debug_info.get("possible_captcha")),
+            error=bool(debug_info and debug_info.get("error")),
+        )
+        print(tracker.format_line(snapshot))
 
     # Save to CSV
     if args.output:

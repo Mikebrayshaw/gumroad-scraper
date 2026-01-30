@@ -232,7 +232,7 @@ def run_scraper(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        products = loop.run_until_complete(
+        products, _debug_info = loop.run_until_complete(
             scrape_discover_page(
                 category_url=url,
                 category_slug=category_slug,
@@ -774,22 +774,33 @@ with tab_full_scrape:
         from categories import CATEGORY_TREE
         total_categories = len(CATEGORY_TREE)
 
-        def update_progress(category: str, idx: int, total: int, products: int):
-            progress = (idx) / total
+        def update_progress(snapshot: dict):
+            completed = snapshot.get("completed", 0)
+            planned_total = snapshot.get("planned_total", 1)
+            progress = completed / planned_total if planned_total else 0
             progress_bar.progress(progress)
-            status_text.write(f"**Progress:** {idx}/{total} categories | {products} products scraped")
-            category_status.write(f"Currently scraping: **{category}**")
+            status_text.write(
+                f"**Progress:** {completed}/{planned_total} categories | "
+                f"{snapshot.get('total_products', 0)} products scraped"
+            )
+            category_label = snapshot.get("category") or "unknown"
+            subcategory_label = snapshot.get("subcategory") or "all"
+            category_status.write(
+                f"Currently scraping: **{category_label}** / **{subcategory_label}**"
+            )
 
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
+            run_id = datetime.utcnow().strftime("streamlit_full_%Y%m%d_%H%M%S")
             result = loop.run_until_complete(
                 scrape_all_categories(
                     max_per_category=full_max_products,
                     rate_limit_ms=full_rate_limit,
                     fast_mode=full_fast_mode,
                     progress_callback=update_progress,
+                    run_id=run_id,
                 )
             )
             loop.close()
