@@ -118,6 +118,10 @@ python pipeline_cli.py export --run-id <run_id> --format csv --out exports/run.c
    streamlit run history_app.py
    ```
    Filter runs, inspect products, and export CSV directly from the UI.
+5. Recommended Railway worker command for full scrapes:
+   ```bash
+   PYTHONUNBUFFERED=1 DIAG_IP_CHECK=1 python -m scripts.railway_worker --mode full
+   ```
 
 ### Save CSVs from scheduled jobs
 - Pass `--save-csv-dir ./ingestion_results` to `ingestion_runner.py` to write a timestamped CSV for every job run. Filenames use the
