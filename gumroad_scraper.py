@@ -818,16 +818,23 @@ async def scrape_discover_page(
             f"{response.status} url={category_url} final={page.url}"
         )
 
-        # Check for 404 or 410 status codes
-        if response and response.status in [404, 410]:
+        if response is None:
             print("[WARN] invalid_route")
             await context.close()
             await browser.close()
-            return [], _invalid_route_debug("http_status", response.status)
+            return [], _invalid_route_debug("goto_no_response")
+
+        if response.status == 404:
+            print("[WARN] invalid_route")
+            await context.close()
+            await browser.close()
+            return [], _invalid_route_debug("http_404", response.status)
 
         # Check page content for "Page not found" indicators (Gumroad may return 200 with error template)
         try:
             page_content = await page.content()
+            page_title = await page.title()
+            body_text = await page.inner_text("body")
             page_not_found_indicators = [
                 "page not found",
                 "404",
@@ -835,11 +842,20 @@ async def scrape_discover_page(
                 "this page doesn't exist",
                 "couldn't find that page",
             ]
-            if any(indicator in page_content.lower() for indicator in page_not_found_indicators):
+            not_found_sources = [
+                page_content.lower(),
+                page_title.lower(),
+                body_text.lower(),
+            ]
+            if any(
+                indicator in source
+                for source in not_found_sources
+                for indicator in page_not_found_indicators
+            ):
                 print("[WARN] invalid_route")
                 await context.close()
                 await browser.close()
-                return [], _invalid_route_debug("page_not_found")
+                return [], _invalid_route_debug("page_not_found_text")
         except Exception as e:
             print(f"[DEBUG] Could not check for 'Page not found' indicators: {e}")
         
